@@ -1,0 +1,6 @@
+{
+  "name": "FluxFox - Day 1 Architecture",
+  "description": "Day 1 foundation for FluxFox SaaS: Next.js 14 App Router, Supabase SSR Google OAuth with Calendar events scope and offline refresh tokens.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

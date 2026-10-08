@@ -1,0 +1,37 @@
+workflows:
+  ios-workflow:
+    name: FluxFox Production Final
+    instance_type: mac_mini_m2
+    working_directory: mobile
+    max_build_duration: 60
+    integrations:
+      app_store_connect: CodeMagic
+    environment:
+      groups:
+        - AppStore
+      vars:
+        BUNDLE_ID: "com.fluxfox.app"
+        XCODE_SCHEME: "FluxFox"
+    scripts:
+      - name: Install Dependencies
+        script: npm install
+      - name: Expo Prebuild
+        script: npx expo prebuild --platform ios --clean
+      - name: Fetch Signing Files
+        script: |
+          keychain initialize
+          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+          keychain add-certificates
+          xcode-project use-profiles
+      - name: Build and Package IPA
+        script: |
+          DETECTED_WORKSPACE=$(find . -name "*.xcworkspace" | grep -v "node_modules" | head -n 1)
+          xcode-project build-ipa \
+            --workspace "$DETECTED_WORKSPACE" \
+            --scheme "$XCODE_SCHEME" \
+            --archive-xcargs "CODE_SIGN_STYLE=Manual"
+    artifacts:
+      - build/ios/ipa/*.ipa
+    publishing:
+      app_store_connect:
+        auth: integration

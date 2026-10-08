@@ -1,0 +1,32 @@
+@import "tailwindcss";
+
+/**
+ * Day 12 — Device QA & Visual Polish for the Expo WebView.
+ *
+ * These rules exist purely to make the dashboard feel native inside the
+ * FluxFox Expo WebView shell on iOS/Android: they suppress the gray "flash"
+ * tap highlight Safari/Chrome apply to touchable elements, expose the
+ * device's safe-area insets (notch / Dynamic Island / home indicator) as
+ * CSS variables, and keep momentum scrolling smooth while the iOS software
+ * keyboard is open. No layout, copy, or color changes are introduced here —
+ * the dark cyber aesthetic is untouched.
+ */
+
+:root {
+  --safe-area-inset-top: env(safe-area-inset-top, 0px);
+  --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+html,
+body {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+/* Utility: pads an element's bottom by the device's safe-area inset (e.g.
+   the iOS home indicator) plus a base gutter, so sticky/bottom-anchored UI
+   never renders underneath it. */
+.pb-safe-bottom {
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 1rem);
+}

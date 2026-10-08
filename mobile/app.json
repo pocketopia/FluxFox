@@ -1,0 +1,42 @@
+{
+  "expo": {
+    "name": "FluxFox",
+    "slug": "fluxfox-mobile",
+    "scheme": "fluxfox",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "backgroundColor": "#09090b",
+    "splash": {
+      "image": "./assets/splash-icon.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#09090b"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "backgroundColor": "#09090b",
+      "bundleIdentifier": "com.fluxfox.app",
+      "buildNumber": "1",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "FluxFox needs access to your microphone so you can speak with your AI receptionist during setup and testing.",
+        "NSCameraUsageDescription": "FluxFox requires camera access to upload a custom business logo or profile picture.",
+        "NSPhotoLibraryUsageDescription": "FluxFox requires photo library access to upload a custom business logo."
+      }
+    },
+    "android": {
+      "package": "com.fluxfox.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#09090b",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    }
+  }
+}
+
