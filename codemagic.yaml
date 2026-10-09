@@ -29,7 +29,7 @@ workflows:
           xcode-project use-profiles
       - name: Build and Package IPA
         script: |
-          DETECTED_WORKSPACE=$(find . -name "*.xcworkspace" | grep -v "node_modules" | head -n 1)
+          DETECTED_WORKSPACE=$(find . -name "*.xcworkspace" | grep -v "node_modules" | grep -v "xcodeproj" | head -n 1)
           xcode-project build-ipa \
             --workspace "$DETECTED_WORKSPACE" \
             --scheme "$XCODE_SCHEME" \
