@@ -32,32 +32,16 @@ export default async function DashboardPage() {
     error: authError,
   } = await supabase.auth.getUser();
 
-  // ------------------------------------------------------------------
-  // TEMPORARY ADMIN BYPASS — Day 1 architecture review only.
-  // ------------------------------------------------------------------
-  // `src/app/login/page.tsx` currently authenticates against a single
-  // hardcoded credential pair and never creates a real Supabase session.
-  // That mismatch made this guard fire on every visit (authError/!user is
-  // always true for the hardcoded "admin" login), bouncing the user back
-  // to /login and producing the login -> onboarding -> dashboard -> login
-  // routing loop.
-  //
-  // The redirect below is disabled ONLY so the dashboard skeleton can be
-  // reviewed before real Supabase auth is wired into the login form.
-  // TODO/RE-ENABLE before shipping: /dashboard is currently reachable
-  // without a valid session while this stays commented out.
-  //
-  // if (authError || !user) {
-  //   redirect('/login');
-  // }
-  void authError;
+  // Real Supabase session guard: `src/app/login/page.tsx` now authenticates
+  // via `supabase.auth.signInWithPassword` / `signInWithOAuth` (Google),
+  // both of which persist a real cookie-based session readable here. Any
+  // unauthenticated visit is bounced straight back to /login.
+  if (authError || !user) {
+    redirect('/login');
+  }
 
-  // Retrieve user record from public.users table. Skipped when there is
-  // no real session (e.g. while the admin bypass above is active) so we
-  // never crash on `user.id`.
-  const { data: profile } = user
-    ? await supabase.from('users').select('*').eq('id', user.id).single()
-    : { data: null };
+  // Retrieve user record from public.users table.
+  const { data: profile } = await supabase.from('users').select('*').eq('id', user.id).single();
 
   const displayName =
     user?.user_metadata?.full_name ||

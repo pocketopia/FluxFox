@@ -2,29 +2,114 @@
 
 import { useState, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
-import { Lock, Mail, AlertCircle, ArrowRight } from 'lucide-react';
+import { Lock, Mail, AlertCircle, ArrowRight, Loader2 } from 'lucide-react';
+import { createClient } from '@/utils/supabase/client';
+
+/** Google's official four-color "G" mark (matches `OnboardingWizard.tsx`'s glyph). */
+function GoogleGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" aria-hidden="true">
+      <path
+        fill="#4285F4"
+        d="M23.52 12.27c0-.85-.08-1.67-.22-2.45H12v4.64h6.47c-.28 1.5-1.13 2.78-2.4 3.63v3.02h3.88c2.27-2.09 3.57-5.17 3.57-8.84z"
+      />
+      <path
+        fill="#34A853"
+        d="M12 24c3.24 0 5.96-1.07 7.95-2.9l-3.88-3.02c-1.08.72-2.45 1.15-4.07 1.15-3.13 0-5.78-2.11-6.73-4.95H1.26v3.11C3.24 21.3 7.29 24 12 24z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M5.27 14.28A7.2 7.2 0 0 1 4.9 12c0-.79.14-1.56.37-2.28V6.61H1.26A11.97 11.97 0 0 0 0 12c0 1.93.46 3.76 1.26 5.39z"
+      />
+      <path
+        fill="#EA4335"
+        d="M12 4.77c1.76 0 3.35.6 4.59 1.8l3.44-3.44C17.95 1.19 15.24 0 12 0 7.29 0 3.24 2.7 1.26 6.61l4.01 3.11C6.22 6.88 8.87 4.77 12 4.77z"
+      />
+    </svg>
+  );
+}
 
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
+  /**
+   * Real Supabase email/password sign-in (`@supabase/ssr`'s browser client,
+   * same as `OnboardingWizard.tsx`'s Google flow). Session state is
+   * persisted via cookies, so the resulting session is immediately visible
+   * to `/dashboard`'s server-side `supabase.auth.getUser()` guard. Requires
+   * a user already provisioned in Supabase Auth (e.g. via the Google OAuth
+   * flow below, or invited from the Supabase dashboard) — there is no
+   * self-serve email/password sign-up screen in this app.
+   */
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setError(null);
     setIsLoading(true);
 
-    // TODO: replace with real authentication once the backend is wired up.
-    if (email === 'twiztedimages@live.com' && password === '@Deadman88') {
-      router.push('/onboarding');
-    } else {
-      setError('Invalid credentials');
-    }
+    try {
+      const supabase = createClient();
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
 
-    setIsLoading(false);
+      if (signInError) {
+        setError(signInError.message);
+        setIsLoading(false);
+        return;
+      }
+
+      router.push('/dashboard');
+      router.refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to sign in. Please try again.');
+      setIsLoading(false);
+    }
   };
+
+  /**
+   * Real Google OAuth sign-in, identical pattern to
+   * `OnboardingWizard.tsx`'s "Continue with Google" button: requests the
+   * Calendar Events scope with an offline refresh token so
+   * `/auth/callback` can persist it to `public.users.google_refresh_token`.
+   * Lands returning users straight on `/dashboard`, where `FluxFoxConsole`
+   * picks up onboarding (deploy assistant / claim number) if not already
+   * complete.
+   */
+  async function handleGoogleSignIn() {
+    setError(null);
+    setIsGoogleLoading(true);
+
+    try {
+      const supabase = createClient();
+      const { error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback?next=/dashboard`,
+          scopes: 'https://www.googleapis.com/auth/calendar.events',
+          queryParams: {
+            access_type: 'offline',
+            prompt: 'consent',
+          },
+        },
+      });
+
+      if (oauthError) {
+        setError(oauthError.message);
+        setIsGoogleLoading(false);
+      }
+      // On success the browser navigates to Google immediately; no further
+      // client code runs until the user lands back on /auth/callback.
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start Google sign-in.');
+      setIsGoogleLoading(false);
+    }
+  }
 
   return (
     <main
@@ -139,7 +224,7 @@ export default function LoginPage() {
             <button
               id="login-submit-button"
               type="submit"
-              disabled={isLoading}
+              disabled={isLoading || isGoogleLoading}
               className="w-full relative group overflow-hidden bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 font-semibold py-3.5 px-6 rounded-lg transition-all duration-200 shadow-lg shadow-amber-500/25 active:scale-[0.99] disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center gap-2 cursor-pointer mt-2"
             >
               <span className="font-bold tracking-tight text-sm sm:text-base">
@@ -148,6 +233,33 @@ export default function LoginPage() {
               {!isLoading && <ArrowRight className="w-4 h-4" />}
             </button>
           </form>
+
+          {/* Divider */}
+          <div className="flex items-center gap-3 my-6">
+            <div className="flex-1 h-px bg-zinc-800" />
+            <span className="text-[11px] text-zinc-500 tracking-wide">OR</span>
+            <div className="flex-1 h-px bg-zinc-800" />
+          </div>
+
+          {/* Google OAuth — the same real Supabase flow used by the onboarding
+              wizard's "Continue with Google" button (OnboardingWizard.tsx),
+              so a returning user can sign in and land straight on /dashboard. */}
+          <button
+            id="login-google-button"
+            type="button"
+            onClick={handleGoogleSignIn}
+            disabled={isLoading || isGoogleLoading}
+            className="w-full flex items-center justify-center gap-3 bg-white hover:bg-zinc-100 text-zinc-900 font-semibold py-3.5 px-6 rounded-lg transition-all duration-200 active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
+          >
+            {isGoogleLoading ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : (
+              <GoogleGlyph />
+            )}
+            <span className="text-sm sm:text-base">
+              {isGoogleLoading ? 'Redirecting to Google...' : 'Continue with Google'}
+            </span>
+          </button>
 
           <p className="mt-5 text-center text-[11px] text-zinc-500">
             Bank-level encryption &bull; Your data is always private
