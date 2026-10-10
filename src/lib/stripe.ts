@@ -45,17 +45,22 @@ export function getStripeClient(): Stripe {
   return cachedClient;
 }
 
+export type SubscriptionPlan = 'monthly' | 'annual';
+
 /**
- * Returns the live Stripe Price id for the FluxFox $99/mo subscription
- * plan. Read from env rather than hardcoded so the same code works across
- * Stripe test mode and live mode without a code change. Throws
- * `StripeConfigError` if unset — never falls back to a fabricated price id.
+ * Returns the live Stripe Price id for the requested FluxFox subscription
+ * plan (monthly or annual). Read from env rather than hardcoded so the
+ * same code works across Stripe test mode and live mode without a code
+ * change. Throws `StripeConfigError` if unset — never falls back to a
+ * fabricated price id.
  */
-export function getSubscriptionPriceId(): string {
-  const priceId = process.env.STRIPE_SUBSCRIPTION_PRICE_ID;
+export function getSubscriptionPriceId(plan: SubscriptionPlan): string {
+  const envVar =
+    plan === 'annual' ? 'NEXT_PUBLIC_STRIPE_ANNUAL_PRICE_ID' : 'NEXT_PUBLIC_STRIPE_MONTHLY_PRICE_ID';
+  const priceId = process.env[envVar];
 
   if (!priceId) {
-    throw new StripeConfigError('Server misconfiguration: STRIPE_SUBSCRIPTION_PRICE_ID is not set.');
+    throw new StripeConfigError(`Server misconfiguration: ${envVar} is not set.`);
   }
 
   return priceId;

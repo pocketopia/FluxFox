@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
-import { getStripeClient, getSubscriptionPriceId, StripeConfigError } from '@/lib/stripe';
+import { getStripeClient, getSubscriptionPriceId, StripeConfigError, type SubscriptionPlan } from '@/lib/stripe';
+
+/** Every FluxFox subscription (monthly or annual) includes a 7-day free trial. */
+const TRIAL_PERIOD_DAYS = 7;
 
 export const dynamic = 'force-dynamic';
 
@@ -48,11 +51,19 @@ export async function POST(request: Request): Promise<NextResponse<CheckoutSucce
 
   const origin = new URL(request.url).origin;
 
+  let requestedPlan: SubscriptionPlan = 'monthly';
+  try {
+    const body = (await request.json().catch(() => null)) as { plan?: string } | null;
+    if (body?.plan === 'annual') requestedPlan = 'annual';
+  } catch {
+    requestedPlan = 'monthly';
+  }
+
   let stripe;
   let priceId: string;
   try {
     stripe = getStripeClient();
-    priceId = getSubscriptionPriceId();
+    priceId = getSubscriptionPriceId(requestedPlan);
   } catch (err) {
     if (err instanceof StripeConfigError) {
       return NextResponse.json({ error: err.message }, { status: 500 });
@@ -66,10 +77,14 @@ export async function POST(request: Request): Promise<NextResponse<CheckoutSucce
       customer_email: user.email,
       client_reference_id: user.id,
       line_items: [{ price: priceId, quantity: 1 }],
+      subscription_data: {
+        trial_period_days: TRIAL_PERIOD_DAYS,
+      },
       success_url: `${origin}/dashboard?checkout=success`,
       cancel_url: `${origin}/dashboard?checkout=cancelled`,
       metadata: {
         supabase_user_id: user.id,
+        plan: requestedPlan,
       },
     });
 
