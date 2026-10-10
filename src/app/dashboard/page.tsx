@@ -1,6 +1,7 @@
 import { redirect } from 'next/navigation';
 import { createClient } from '@/utils/supabase/server';
 import FluxFoxConsole from '@/components/dashboard/FluxFoxConsole';
+import SubscribeButton from '@/components/dashboard/SubscribeButton';
 import {
   CalendarCheck2,
   ShieldCheck,
@@ -105,11 +106,13 @@ export default async function DashboardPage() {
         .eq('assistant_id', vapiAssistantId)
         .order('created_at', { ascending: false })
     : { data: null as CallLogRow[] | null };
-  // NOTE: the Day 8 Stripe web paywall (`profile.subscription_status`) has
-  // been rolled back from the onboarding UI for App Store IAP compliance.
-  // The `stripe_customer_id`/`subscription_status` columns and the
-  // /api/stripe/* routes remain in place for a future in-app purchase
-  // flow, but the dashboard no longer gates onboarding on them.
+  // NOTE: onboarding (the FluxFoxConsole wizard below) intentionally never
+  // gates on `profile.subscription_status` — App Store review requires the
+  // core product experience to be reachable without a paywall blocking it.
+  // Monetization instead lives in the Billing section's `SubscribeButton`,
+  // which routes to native Apple IAP inside the mobile WebView (see
+  // `mobile/App.tsx` + `/api/apple/verify-receipt`) or Stripe Checkout in a
+  // standard browser (`/api/stripe/checkout`).
 
   async function handleSignOut() {
     'use server';
@@ -583,9 +586,16 @@ export default async function DashboardPage() {
                   {profile?.subscription_status === 'active' ? 'FluxFox Pro' : 'No active plan'}
                 </div>
               </div>
-              <span className="px-2.5 py-1 text-xs font-medium rounded-md border bg-zinc-800/60 text-zinc-400 border-zinc-700 w-fit">
-                Managed in-app
-              </span>
+              {profile?.subscription_status === 'active' ? (
+                <span className="px-2.5 py-1 text-xs font-medium rounded-md border bg-emerald-500/10 text-emerald-400 border-emerald-500/30 w-fit">
+                  Active
+                </span>
+              ) : (
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                  <SubscribeButton plan="monthly" label="Subscribe — Monthly" />
+                  <SubscribeButton plan="annual" label="Subscribe — Annual (save 20%)" />
+                </div>
+              )}
             </div>
           </div>
         </section>

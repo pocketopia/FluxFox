@@ -88,13 +88,13 @@ function FluxBubble({ children }: { children: React.ReactNode }) {
  *   1. `vapiAssistantId`, no phone number → claim a business line
  *   2. Both present                        → fully active, test-call ready
  *
- * STRATEGIC PIVOT (App Store IAP compliance): the Stripe subscription
- * blocker that previously gated step 0 behind a web-based paywall has been
- * removed. Onboarding now starts directly at step 0 for every signed-in
- * user. Monetization moves to a future in-app purchase flow (Apple/Google
- * IAP), which will be re-introduced at step 2 once the assistant and
- * phone number are live — see the "Test Call (Demo)" placeholder below,
- * reserved for that upcoming paywall.
+ * STRATEGIC PIVOT (App Store IAP compliance): this wizard never gates on
+ * `subscription_status` — onboarding always starts at step 0 for every
+ * signed-in user, so the core product experience is reachable without a
+ * paywall. Monetization instead lives in the dashboard's Billing section
+ * (`SubscribeButton`, see `src/app/dashboard/page.tsx`), which triggers
+ * native Apple IAP inside the mobile WebView (`mobile/App.tsx` +
+ * `/api/apple/verify-receipt`) or Stripe Checkout in a standard browser.
  *
  * No client-side state ever fabricates a deployed assistant or phone
  * number; success only advances the UI after the corresponding API call
@@ -308,11 +308,11 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
           </div>
 
           {/*
-            "Test Call (Demo)" — reserved slot for the future App Store /
-            Play Store in-app purchase paywall (Day 8's Stripe web paywall
-            was rolled back for IAP compliance). For now this simply lets
-            the owner dial their own live AI receptionist number to hear it
-            in action; it performs a real `tel:` call, never a simulated one.
+            "Test Call (Demo)" lets the owner dial their own live AI
+            receptionist number to hear it in action; it performs a real
+            `tel:` call, never a simulated one. Monetization is handled
+            separately by the Billing section's SubscribeButton (see
+            src/app/dashboard/page.tsx), not gated behind this step.
           */}
           <div
             id="test-call-demo"

@@ -27,6 +27,12 @@ alter table public.users
   add column if not exists stripe_customer_id text,
   add column if not exists subscription_status text default 'inactive';
 
+-- 1d. Day 14: add the Apple IAP paywall columns
+-- (safe/idempotent for databases that already ran earlier migrations above)
+alter table public.users
+  add column if not exists apple_original_transaction_id text,
+  add column if not exists apple_product_id text;
+
 -- 2. Performance indexes
 create index if not exists users_email_idx on public.users (email);
 create index if not exists users_created_at_idx on public.users (created_at desc);
@@ -90,7 +96,9 @@ comment on table public.users is 'FluxFox core user directory and OAuth token va
 comment on column public.users.google_refresh_token is 'Offline access refresh token required to write to https://www.googleapis.com/auth/calendar.events';
 comment on column public.users.vapi_assistant_id is 'The Vapi.ai assistant id deployed for this user''s AI receptionist (see /api/assistant/deploy).';
 comment on column public.users.stripe_customer_id is 'The Stripe Customer id created for this user (see /api/stripe/checkout and /api/stripe/webhook).';
-comment on column public.users.subscription_status is 'The FluxFox subscription state for this user: ''inactive'' | ''active'' (set to ''active'' only by /api/stripe/webhook on checkout.session.completed).';
+comment on column public.users.subscription_status is 'The FluxFox subscription state for this user: ''inactive'' | ''active'' (set to ''active'' by /api/stripe/webhook on checkout.session.completed, or by /api/apple/verify-receipt on a verified Apple IAP subscription).';
+comment on column public.users.apple_original_transaction_id is 'The App Store original_transaction_id for this user''s active auto-renewable subscription (see /api/apple/verify-receipt).';
+comment on column public.users.apple_product_id is 'The App Store Connect product id (SKU) for this user''s active subscription plan (see /api/apple/verify-receipt).';
 
 -- ==============================================================================
 -- FLUXFOX DAY 10: CALL TELEMETRY LOGGING
