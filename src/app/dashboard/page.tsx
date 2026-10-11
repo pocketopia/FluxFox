@@ -12,7 +12,6 @@ import {
   Activity,
   CheckCircle2,
   Clock,
-  Flame,
   CircleAlert,
   User,
   History,
@@ -134,8 +133,13 @@ export default async function DashboardPage() {
         <div className="max-w-7xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center p-0.5 shadow-md shadow-amber-500/20 ring-1 ring-amber-400/40">
-              <div className="w-full h-full bg-zinc-950 rounded-[6px] flex items-center justify-center">
-                <Flame className="w-5 h-5 text-amber-400" />
+              <div className="w-full h-full bg-zinc-950 rounded-[6px] flex items-center justify-center overflow-hidden">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src="/icon.png"
+                  alt="FluxFox logo"
+                  className="w-full h-full object-contain p-1"
+                />
               </div>
             </div>
             <div>
