@@ -38,7 +38,15 @@ interface CheckoutSuccessResponse {
  * (401 for auth, 500 for Stripe/config failures).
  */
 export async function POST(request: Request): Promise<NextResponse<CheckoutSuccessResponse | ApiErrorResponse>> {
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await createClient();
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Failed to initialize the Supabase client.' },
+      { status: 500 }
+    );
+  }
 
   const {
     data: { user },

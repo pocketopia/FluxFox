@@ -59,7 +59,12 @@ export async function getGoogleCalendarClientFromRefreshToken(
  * `GoogleAuthError` so the caller can return a strict, unambiguous error.
  */
 export async function getGoogleCalendarClient(): Promise<calendar_v3.Calendar> {
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await createClient();
+  } catch (err) {
+    throw new GoogleAuthError(err instanceof Error ? err.message : 'Failed to initialize the Supabase client.');
+  }
 
   const {
     data: { user },

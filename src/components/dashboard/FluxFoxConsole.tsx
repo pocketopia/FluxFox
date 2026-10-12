@@ -18,8 +18,14 @@ import {
   HardHat,
   Hammer,
   ArrowRight,
+  ArrowLeft,
   PartyPopper,
   PhoneOutgoing,
+  Building2,
+  Wand2,
+  PencilLine,
+  ThumbsUp,
+  CircleAlert,
 } from 'lucide-react';
 
 export interface FluxFoxConsoleProps {
@@ -101,6 +107,18 @@ function FluxBubble({ children }: { children: React.ReactNode }) {
  * returns 200, and the page is refreshed so the server re-reads the true
  * database state.
  */
+/**
+ * The assistant creation sub-wizard's internal phases (only relevant while
+ * `step === 0`, i.e. no assistant has been deployed yet):
+ *   industry     — choose a trade vertical (unchanged from before)
+ *   company      — NEW: enter the business's display name
+ *   choice       — NEW: Path A (auto-generate) vs Path B (write it myself)
+ *   auto-review  — Path A: review the AI-generated prompt; "I like it!" or "Edit"
+ *   manual-write — Path B: write the system prompt from scratch
+ *   ready        — final review before the real "Deploy AI" network call
+ */
+type SetupPhase = 'industry' | 'company' | 'choice' | 'auto-review' | 'manual-write' | 'ready';
+
 export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: FluxFoxConsoleProps) {
   const router = useRouter();
 
@@ -110,7 +128,86 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
   const [isProvisioning, setIsProvisioning] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // --- Assistant creation wizard state (Company Name step + two-path prompt setup) ---
+  const [setupPhase, setSetupPhase] = useState<SetupPhase>('industry');
+  const [companyName, setCompanyName] = useState('');
+  const [systemPrompt, setSystemPrompt] = useState('');
+  const [isGeneratingPrompt, setIsGeneratingPrompt] = useState(false);
+  const [isEditingPrompt, setIsEditingPrompt] = useState(false);
+
   const step: 0 | 1 | 2 = !vapiAssistantId ? 0 : !twilioPhoneNumber ? 1 : 2;
+
+  function handleIndustryContinue() {
+    if (!selectedIndustry) return;
+    setErrorMessage(null);
+    setSetupPhase('company');
+  }
+
+  function handleCompanyContinue() {
+    if (!companyName.trim()) return;
+    setErrorMessage(null);
+    setSetupPhase('choice');
+  }
+
+  /** Path A: ask the server to auto-generate a prompt tailored to this company name + trade. */
+  async function handleChooseAutoGenerate() {
+    if (!selectedIndustry || isGeneratingPrompt) return;
+    setErrorMessage(null);
+    setIsGeneratingPrompt(true);
+
+    try {
+      const res = await fetch('/api/assistant/suggest-prompt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ industry: selectedIndustry, companyName: companyName.trim() }),
+      });
+
+      const data = (await res.json().catch(() => null)) as { systemPrompt?: string; error?: string } | null;
+
+      if (!res.ok || !data?.systemPrompt) {
+        throw new Error(data?.error || 'Failed to generate a suggested prompt. Please try again.');
+      }
+
+      setSystemPrompt(data.systemPrompt);
+      setIsEditingPrompt(false);
+      setSetupPhase('auto-review');
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : 'Something went wrong generating your prompt.');
+    } finally {
+      setIsGeneratingPrompt(false);
+    }
+  }
+
+  /** Path B: skip generation entirely and let the user write the prompt from scratch. */
+  function handleChooseManual() {
+    setErrorMessage(null);
+    setSystemPrompt('');
+    setSetupPhase('manual-write');
+  }
+
+  /** Path A — "I like it!": accept the auto-generated prompt verbatim. */
+  function handleAcceptGeneratedPrompt() {
+    setIsEditingPrompt(false);
+    setSetupPhase('ready');
+  }
+
+  /** Path A — "Edit": switch the reviewed prompt into an editable textarea in place. */
+  function handleEditGeneratedPrompt() {
+    setIsEditingPrompt(true);
+  }
+
+  /** Path A — confirms the edited prompt and proceeds to the final review step. */
+  function handleSaveEditedPrompt() {
+    if (!systemPrompt.trim()) return;
+    setIsEditingPrompt(false);
+    setSetupPhase('ready');
+  }
+
+  /** Path B — confirms the manually-written prompt and proceeds to the final review step. */
+  function handleManualContinue() {
+    if (!systemPrompt.trim()) return;
+    setSetupPhase('ready');
+  }
 
   async function handleDeployAssistant() {
     if (!selectedIndustry || isDeploying) return;
@@ -121,7 +218,11 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
       const res = await fetch('/api/assistant/deploy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ industry: selectedIndustry }),
+        body: JSON.stringify({
+          industry: selectedIndustry,
+          companyName: companyName.trim(),
+          systemPrompt: systemPrompt.trim() || undefined,
+        }),
       });
 
       const data = (await res.json().catch(() => null)) as { error?: string } | null;
@@ -180,10 +281,45 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
       <div className="flex items-start gap-4">
         <FluxAvatar />
 
-        {step === 0 && (
+        {step === 0 && setupPhase === 'industry' && (
           <FluxBubble>
             <p className="font-semibold text-white mb-1">Hey, I&rsquo;m Flux! 🦊</p>
             <p>Let&rsquo;s get your AI receptionist online. What industry are you in?</p>
+          </FluxBubble>
+        )}
+
+        {step === 0 && setupPhase === 'company' && (
+          <FluxBubble>
+            <p className="font-semibold text-white mb-1">Nice choice! 👍</p>
+            <p>What&rsquo;s your company name? I&rsquo;ll use it to personalize how your AI answers the phone.</p>
+          </FluxBubble>
+        )}
+
+        {step === 0 && setupPhase === 'choice' && (
+          <FluxBubble>
+            <p className="font-semibold text-white mb-1">Got it, {companyName || 'there'}! 🎯</p>
+            <p>How would you like to set up your AI&rsquo;s prompt and behavior?</p>
+          </FluxBubble>
+        )}
+
+        {step === 0 && setupPhase === 'auto-review' && (
+          <FluxBubble>
+            <p className="font-semibold text-white mb-1">Here&rsquo;s what I came up with! ✨</p>
+            <p>Take a look at the prompt below — like it as-is, or tweak it to match your voice.</p>
+          </FluxBubble>
+        )}
+
+        {step === 0 && setupPhase === 'manual-write' && (
+          <FluxBubble>
+            <p className="font-semibold text-white mb-1">You&rsquo;re the boss! ✍️</p>
+            <p>Write the system prompt that defines how your AI receptionist should behave.</p>
+          </FluxBubble>
+        )}
+
+        {step === 0 && setupPhase === 'ready' && (
+          <FluxBubble>
+            <p className="font-semibold text-white mb-1">Looking good! 🚀</p>
+            <p>Everything&rsquo;s set — deploy your AI receptionist whenever you&rsquo;re ready.</p>
           </FluxBubble>
         )}
 
@@ -218,7 +354,7 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
         </div>
       )}
 
-      {step === 0 && (
+      {step === 0 && setupPhase === 'industry' && (
         <div className="mt-5 ml-0 sm:ml-[60px]">
           <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-5">
             {INDUSTRY_OPTIONS.map(({ value, label, icon: Icon }) => {
@@ -228,7 +364,6 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
                   key={value}
                   type="button"
                   onClick={() => setSelectedIndustry(value)}
-                  disabled={isDeploying}
                   className={`flex flex-col items-center justify-center gap-1.5 min-h-[44px] px-2 py-3 rounded-lg border text-[11px] font-medium transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed ${
                     isSelected
                       ? 'bg-amber-500/15 border-amber-500/60 text-amber-300'
@@ -243,10 +378,240 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
           </div>
 
           <button
+            id="industry-continue-button"
+            type="button"
+            onClick={handleIndustryContinue}
+            disabled={!selectedIndustry}
+            className="w-full sm:w-auto min-h-[44px] flex items-center justify-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 font-semibold px-6 py-3 rounded-lg shadow-lg shadow-amber-500/25 transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+          >
+            <ArrowRight className="w-4 h-4" />
+            Continue
+          </button>
+        </div>
+      )}
+
+      {/* NEW: Company Name step — collects the business's display name before any prompt is generated. */}
+      {step === 0 && setupPhase === 'company' && (
+        <div className="mt-5 ml-0 sm:ml-[60px]">
+          <label htmlFor="company-name-input" className="block text-xs font-medium text-zinc-400 mb-2">
+            Company name
+          </label>
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+            <div className="relative flex-1">
+              <Building2 className="w-4 h-4 text-zinc-600 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                id="company-name-input"
+                type="text"
+                autoComplete="organization"
+                placeholder="Ridgeline Plumbing Co."
+                value={companyName}
+                onChange={(e) => setCompanyName(e.target.value)}
+                className="w-full min-h-[44px] bg-zinc-950/70 border border-zinc-800 rounded-lg pl-10 pr-4 py-3 text-sm text-white placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50"
+              />
+            </div>
+
+            <button
+              id="company-name-continue-button"
+              type="button"
+              onClick={handleCompanyContinue}
+              disabled={!companyName.trim()}
+              className="min-h-[44px] flex items-center justify-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 font-semibold px-6 py-3 rounded-lg shadow-lg shadow-amber-500/25 transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            >
+              <ArrowRight className="w-4 h-4" />
+              Continue
+            </button>
+          </div>
+
+          <button
+            id="company-name-back-button"
+            type="button"
+            onClick={() => setSetupPhase('industry')}
+            className="mt-3 flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Back
+          </button>
+        </div>
+      )}
+
+      {/* NEW: two-path prompt/behavior setup — Path A (auto-generate) vs Path B (write it myself). */}
+      {step === 0 && setupPhase === 'choice' && (
+        <div className="mt-5 ml-0 sm:ml-[60px] grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <button
+            id="path-auto-generate-button"
+            type="button"
+            onClick={handleChooseAutoGenerate}
+            disabled={isGeneratingPrompt}
+            className="flex flex-col items-start gap-2 p-4 rounded-lg border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/15 text-left transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            <div className="w-9 h-9 rounded-lg bg-amber-500/15 border border-amber-500/40 flex items-center justify-center text-amber-400">
+              {isGeneratingPrompt ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-white">
+                {isGeneratingPrompt ? 'Generating your prompt…' : 'Let the AI write it for me'}
+              </p>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                Flux auto-generates a custom prompt based on &ldquo;{companyName}&rdquo; and your trade. You can
+                still tweak it afterward.
+              </p>
+            </div>
+          </button>
+
+          <button
+            id="path-manual-button"
+            type="button"
+            onClick={handleChooseManual}
+            disabled={isGeneratingPrompt}
+            className="flex flex-col items-start gap-2 p-4 rounded-lg border border-zinc-800 bg-zinc-950/70 hover:border-zinc-700 text-left transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            <div className="w-9 h-9 rounded-lg bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+              <PencilLine className="w-4 h-4" />
+            </div>
+            <div>
+              <p className="text-sm font-semibold text-white">I&rsquo;ll write it myself</p>
+              <p className="text-xs text-zinc-400 mt-0.5">
+                Start from a blank slate and fully customize your AI&rsquo;s behavior and prompt.
+              </p>
+            </div>
+          </button>
+
+          <button
+            id="choice-back-button"
+            type="button"
+            onClick={() => setSetupPhase('company')}
+            className="sm:col-span-2 flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer w-fit"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Back
+          </button>
+        </div>
+      )}
+
+      {/* Path A review — "I like it!" or "Edit" (or save the edit, once editing). */}
+      {step === 0 && setupPhase === 'auto-review' && (
+        <div className="mt-5 ml-0 sm:ml-[60px] space-y-4">
+          {isEditingPrompt ? (
+            <textarea
+              id="auto-generated-prompt-textarea"
+              value={systemPrompt}
+              onChange={(e) => setSystemPrompt(e.target.value)}
+              rows={10}
+              className="w-full bg-zinc-950/70 border border-amber-500/40 rounded-lg px-4 py-3 text-xs text-zinc-200 leading-relaxed focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50 font-mono"
+            />
+          ) : (
+            <div
+              id="auto-generated-prompt-preview"
+              className="w-full max-h-72 overflow-y-auto bg-zinc-950/70 border border-zinc-800 rounded-lg px-4 py-3 text-xs text-zinc-300 leading-relaxed whitespace-pre-wrap font-mono"
+            >
+              {systemPrompt}
+            </div>
+          )}
+
+          <div className="flex flex-col sm:flex-row gap-3">
+            {isEditingPrompt ? (
+              <button
+                id="save-edited-prompt-button"
+                type="button"
+                onClick={handleSaveEditedPrompt}
+                disabled={!systemPrompt.trim()}
+                className="flex-1 min-h-[44px] flex items-center justify-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 font-semibold px-6 py-3 rounded-lg shadow-lg shadow-amber-500/25 transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              >
+                <ThumbsUp className="w-4 h-4" />
+                Save Changes
+              </button>
+            ) : (
+              <>
+                <button
+                  id="accept-generated-prompt-button"
+                  type="button"
+                  onClick={handleAcceptGeneratedPrompt}
+                  className="flex-1 min-h-[44px] flex items-center justify-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 font-semibold px-6 py-3 rounded-lg shadow-lg shadow-amber-500/25 transition-all active:scale-[0.99] cursor-pointer"
+                >
+                  <ThumbsUp className="w-4 h-4" />
+                  I like it!
+                </button>
+                <button
+                  id="edit-generated-prompt-button"
+                  type="button"
+                  onClick={handleEditGeneratedPrompt}
+                  className="flex-1 min-h-[44px] flex items-center justify-center gap-2 border border-zinc-800 hover:border-zinc-700 text-zinc-200 font-semibold px-6 py-3 rounded-lg transition-all cursor-pointer"
+                >
+                  <PencilLine className="w-4 h-4" />
+                  Edit
+                </button>
+              </>
+            )}
+          </div>
+
+          <button
+            id="auto-review-back-button"
+            type="button"
+            onClick={() => setSetupPhase('choice')}
+            className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Back
+          </button>
+        </div>
+      )}
+
+      {/* Path B — write the system prompt from scratch. */}
+      {step === 0 && setupPhase === 'manual-write' && (
+        <div className="mt-5 ml-0 sm:ml-[60px] space-y-4">
+          <textarea
+            id="manual-prompt-textarea"
+            value={systemPrompt}
+            onChange={(e) => setSystemPrompt(e.target.value)}
+            rows={10}
+            placeholder={`You are the AI phone receptionist for ${companyName || 'your business'}. You handle inbound calls to schedule, reschedule, and confirm service appointments...`}
+            className="w-full bg-zinc-950/70 border border-zinc-800 rounded-lg px-4 py-3 text-xs text-zinc-200 leading-relaxed placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50 font-mono"
+          />
+
+          <div className="flex flex-col sm:flex-row gap-3">
+            <button
+              id="manual-prompt-continue-button"
+              type="button"
+              onClick={handleManualContinue}
+              disabled={!systemPrompt.trim()}
+              className="flex-1 min-h-[44px] flex items-center justify-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 font-semibold px-6 py-3 rounded-lg shadow-lg shadow-amber-500/25 transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            >
+              <ArrowRight className="w-4 h-4" />
+              Continue
+            </button>
+          </div>
+
+          <button
+            id="manual-write-back-button"
+            type="button"
+            onClick={() => setSetupPhase('choice')}
+            className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Back
+          </button>
+        </div>
+      )}
+
+      {/* Final review — real "Deploy AI" network call, unchanged behavior from before. */}
+      {step === 0 && setupPhase === 'ready' && (
+        <div className="mt-5 ml-0 sm:ml-[60px] space-y-4">
+          <div
+            id="ready-to-deploy-summary"
+            className="p-4 rounded-lg bg-zinc-950/70 border border-zinc-800 flex items-start gap-3"
+          >
+            <CircleAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+            <p className="text-xs text-zinc-400">
+              Ready to deploy <span className="text-zinc-200 font-semibold">{companyName}</span>&rsquo;s AI
+              receptionist with your configured prompt.
+            </p>
+          </div>
+
+          <button
             id="deploy-ai-button"
             type="button"
             onClick={handleDeployAssistant}
-            disabled={!selectedIndustry || isDeploying}
+            disabled={isDeploying}
             className="w-full sm:w-auto min-h-[44px] flex items-center justify-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 font-semibold px-6 py-3 rounded-lg shadow-lg shadow-amber-500/25 transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
           >
             {isDeploying ? (
@@ -260,6 +625,17 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
                 Deploy AI
               </>
             )}
+          </button>
+
+          <button
+            id="ready-back-button"
+            type="button"
+            onClick={() => setSetupPhase('choice')}
+            disabled={isDeploying}
+            className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Back
           </button>
         </div>
       )}

@@ -43,7 +43,15 @@ interface ApiErrorResponse {
  * input/missing prerequisites, 500 for Twilio/DB failures).
  */
 export async function POST(request: Request): Promise<NextResponse<ProvisionSuccessResponse | ApiErrorResponse>> {
-  const supabase = await createClient();
+  let supabase;
+  try {
+    supabase = await createClient();
+  } catch (err) {
+    return NextResponse.json(
+      { error: err instanceof Error ? err.message : 'Failed to initialize the Supabase client.' },
+      { status: 500 }
+    );
+  }
 
   const {
     data: { user },

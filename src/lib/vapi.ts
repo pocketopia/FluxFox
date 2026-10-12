@@ -20,6 +20,15 @@ export class VapiApiError extends Error {
 export interface DeployAssistantParams {
   /** Raw industry identifier supplied by the client, e.g. "plumber", "roofer". */
   industry: string;
+  /** The business's display name, used to personalize the assistant's name, greeting, and system prompt. */
+  companyName?: string;
+  /**
+   * A fully custom system prompt to use verbatim instead of the
+   * auto-generated one (set when the caller accepted an auto-generated
+   * prompt as-is, edited it, or wrote one entirely from scratch via the
+   * "Write it myself" path).
+   */
+  systemPrompt?: string;
 }
 
 /** The subset of the Vapi `Assistant` response shape this module relies on. */
@@ -58,9 +67,20 @@ function resolveIndustryLabel(industry: string): string {
  * (resolved by Vapi at call time to the real current date/time) and
  * enforces strict ISO-8601 formatting for the `book_appointment` function
  * call so downstream calendar writes never receive ambiguous dates.
+ *
+ * `companyName`, when provided, personalizes the opening line and
+ * identifies the business by name throughout the prompt instead of the
+ * generic "a professional ${industryLabel} business" phrasing — this is
+ * exactly what the onboarding wizard's "auto-generate" path (Path A) calls
+ * via `generateSuggestedPrompt` below to produce its live preview.
  */
-function buildSystemPrompt(industryLabel: string): string {
-  return `You are the AI phone receptionist for a professional ${industryLabel} business. You handle inbound calls to schedule, reschedule, and confirm service appointments on the business owner's behalf.
+function buildSystemPrompt(industryLabel: string, companyName?: string): string {
+  const trimmedCompanyName = companyName?.trim();
+  const businessPhrase = trimmedCompanyName
+    ? `${trimmedCompanyName}, a professional ${industryLabel} business`
+    : `a professional ${industryLabel} business`;
+
+  return `You are the AI phone receptionist for ${businessPhrase}. You handle inbound calls to schedule, reschedule, and confirm service appointments on the business owner's behalf.
 
 CURRENT DATE AND TIME
 The current date and time is {{now}}. Always resolve relative dates and times ("tomorrow", "next Tuesday", "in two weeks", "this afternoon") against this anchor. Never assume a fixed year, month, or day — always derive it from {{now}}.
@@ -69,7 +89,7 @@ DATE FORMATTING — STRICT
 Whenever you call the book_appointment function, the date_time argument MUST be a single strict ISO-8601 timestamp with a timezone offset or a "Z" (UTC) suffix, formatted exactly as YYYY-MM-DDTHH:mm:ssZ (for example: 2026-03-14T15:30:00Z). Never output date_time in natural language, never omit the time component, never omit the timezone designator, and never guess a value the caller has not explicitly confirmed.
 
 CONVERSATION FLOW
-1. Greet the caller warmly and ask how you can help.
+1. Greet the caller warmly${trimmedCompanyName ? ` as ${trimmedCompanyName}` : ''} and ask how you can help.
 2. Determine the type of ${industryLabel} work they need (this becomes project_type).
 3. Collect all five required booking details: customer_name, customer_phone, customer_email, project_type, and a confirmed appointment date_time.
 4. Read every detail back to the caller and get explicit verbal confirmation before booking anything.
@@ -81,6 +101,22 @@ RULES
 - If the caller asks about something outside scheduling (billing disputes, complaints, emergencies), acknowledge it and let them know a team member will follow up — do not attempt to resolve it yourself.
 - Keep every response concise, professional, and courteous.
 - Speak naturally; never read raw ISO-8601 timestamps aloud to the caller. Convert them to plain spoken language (e.g. "Tuesday, March 14th at 3:30 PM") when confirming, while still passing the strict ISO-8601 form to the function call.`;
+}
+
+/**
+ * Public, client-callable preview of `buildSystemPrompt`. Powers Path A of
+ * the assistant creation wizard ("Auto-generate for me"): given the
+ * company name + trade the user just entered, returns the exact system
+ * prompt `deployVapiAssistant` would ship to Vapi, so the "I like it!" /
+ * "Edit" step shows the caller the real, final prompt rather than a
+ * separate, divergent preview string.
+ */
+export function generateSuggestedPrompt(industry: string, companyName: string): string {
+  const trimmedIndustry = industry.trim();
+  if (!trimmedIndustry) {
+    throw new VapiApiError('An `industry` value (e.g. "plumber", "roofer") is required to generate a prompt.');
+  }
+  return buildSystemPrompt(resolveIndustryLabel(trimmedIndustry), companyName);
 }
 
 /**
@@ -136,6 +172,8 @@ function buildBookAppointmentTool(industryLabel: string) {
  */
 export async function deployVapiAssistant({
   industry,
+  companyName,
+  systemPrompt,
 }: DeployAssistantParams): Promise<VapiAssistant> {
   const apiKey = process.env.VAPI_PRIVATE_API_KEY;
 
@@ -149,17 +187,28 @@ export async function deployVapiAssistant({
   }
 
   const industryLabel = resolveIndustryLabel(trimmedIndustry);
+  const trimmedCompanyName = companyName?.trim();
+  const trimmedSystemPrompt = systemPrompt?.trim();
+
+  // A caller-supplied `systemPrompt` (Path A "I like it!"/"Edit", or Path B
+  // "write it myself" in the creation wizard) is always used verbatim; only
+  // when none is supplied do we fall back to the auto-generated prompt.
+  const resolvedSystemPrompt = trimmedSystemPrompt || buildSystemPrompt(industryLabel, trimmedCompanyName);
 
   const payload = {
-    name: `FluxFox Receptionist — ${industryLabel}`,
-    firstMessage: `Thanks for calling! I can help you schedule ${industryLabel} service. What can I help you with today?`,
+    name: trimmedCompanyName
+      ? `${trimmedCompanyName} — FluxFox Receptionist`
+      : `FluxFox Receptionist — ${industryLabel}`,
+    firstMessage: trimmedCompanyName
+      ? `Thanks for calling ${trimmedCompanyName}! I can help you schedule ${industryLabel} service. What can I help you with today?`
+      : `Thanks for calling! I can help you schedule ${industryLabel} service. What can I help you with today?`,
     model: {
       provider: 'openai',
       model: 'gpt-4o',
       messages: [
         {
           role: 'system',
-          content: buildSystemPrompt(industryLabel),
+          content: resolvedSystemPrompt,
         },
       ],
       tools: [buildBookAppointmentTool(industryLabel)],
