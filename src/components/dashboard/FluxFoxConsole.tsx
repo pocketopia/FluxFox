@@ -21,6 +21,8 @@ import {
   ArrowLeft,
   PartyPopper,
   PhoneOutgoing,
+  PhoneForwarded,
+  Rocket,
   Building2,
   Wand2,
   PencilLine,
@@ -119,6 +121,19 @@ function FluxBubble({ children }: { children: React.ReactNode }) {
  */
 type SetupPhase = 'industry' | 'company' | 'choice' | 'auto-review' | 'manual-write' | 'ready';
 
+/**
+ * The phone-number step's internal path (only relevant while `step === 1`,
+ * i.e. an assistant has been deployed but no number has been provisioned
+ * yet):
+ *   choice   — NEW: big, clear fork between getting a new line vs. forwarding
+ *   new      — Path A: "Get a New Business Line" — shows the area code input
+ *   existing — Path B: "Use My Existing Number" — explains the background VA
+ *              number they'll forward calls to, then still collects an area
+ *              code for that background number (the API always purchases a
+ *              real Twilio number to bind the assistant to).
+ */
+type PhoneNumberPath = 'choice' | 'new' | 'existing';
+
 export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: FluxFoxConsoleProps) {
   const router = useRouter();
 
@@ -127,6 +142,9 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
   const [isDeploying, setIsDeploying] = useState(false);
   const [isProvisioning, setIsProvisioning] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // --- Phone number step state (two-path choice: new line vs. forward existing) ---
+  const [phoneNumberPath, setPhoneNumberPath] = useState<PhoneNumberPath>('choice');
 
   // --- Assistant creation wizard state (Company Name step + two-path prompt setup) ---
   const [setupPhase, setSetupPhase] = useState<SetupPhase>('industry');
@@ -323,10 +341,27 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
           </FluxBubble>
         )}
 
-        {step === 1 && (
+        {step === 1 && phoneNumberPath === 'choice' && (
           <FluxBubble>
             <p className="font-semibold text-white mb-1">Awesome! Your AI is ready. ✅</p>
-            <p>What area code should we buy for your new business line?</p>
+            <p>Last step — how do you want customers to reach it?</p>
+          </FluxBubble>
+        )}
+
+        {step === 1 && phoneNumberPath === 'new' && (
+          <FluxBubble>
+            <p className="font-semibold text-white mb-1">New Business Line 📞</p>
+            <p>What area code should we buy for your brand-new business number?</p>
+          </FluxBubble>
+        )}
+
+        {step === 1 && phoneNumberPath === 'existing' && (
+          <FluxBubble>
+            <p className="font-semibold text-white mb-1">Forwarding Your Existing Number ↪️</p>
+            <p>
+              We&rsquo;ll still provision a background AI number for your assistant to answer on — you just forward
+              your current business number to it. What area code should that background number be in?
+            </p>
           </FluxBubble>
         )}
 
@@ -336,10 +371,8 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
               You did it! Your AI receptionist is live! <PartyPopper className="w-4 h-4 text-amber-400" />
             </p>
             <p>
-              Calls to{' '}
-              <span className="text-amber-400 font-semibold">{formatPhoneNumber(twilioPhoneNumber)}</span> are now
-              answered by your AI, 24/7 — booking real appointments straight to your calendar while you focus on the
-              job. Give it a try below.
+              Calls to your new number are now answered by your AI, 24/7 — booking real appointments straight to your
+              calendar while you focus on the job. Give it a try below.
             </p>
           </FluxBubble>
         )}
@@ -640,44 +673,147 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
         </div>
       )}
 
-      {step === 1 && (
-        <div className="mt-5 ml-0 sm:ml-[60px] flex flex-col sm:flex-row items-stretch sm:items-center gap-3 scroll-mt-24">
-          <input
-            id="area-code-input"
-            type="text"
-            inputMode="numeric"
-            maxLength={3}
-            placeholder="415"
-            value={areaCode}
-            onChange={(e) => setAreaCode(e.target.value.replace(/\D/g, '').slice(0, 3))}
-            disabled={isProvisioning}
-            className="w-full sm:w-28 min-h-[44px] bg-zinc-950/70 border border-zinc-800 rounded-lg px-4 py-3 text-center text-lg font-semibold tracking-widest text-white placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50 disabled:opacity-60 scroll-mt-24"
-          />
+      {/*
+        NEW: massive, unmissable two-path fork for the phone number step.
+        Path A ("Get a New Business Line") reveals the area code input to
+        buy a fresh Twilio/Vapi number outright. Path B ("Use My Existing
+        Number") makes clear we still provision a background VA number
+        behind the scenes — the owner forwards their current business line
+        to it rather than handing out a brand-new number to customers.
+      */}
+      {step === 1 && phoneNumberPath === 'choice' && (
+        <div className="mt-5 ml-0 sm:ml-[60px] grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <button
+            id="phone-path-new-button"
+            type="button"
+            onClick={() => {
+              setErrorMessage(null);
+              setPhoneNumberPath('new');
+            }}
+            className="flex flex-col items-start gap-3 p-6 rounded-xl border-2 border-amber-500/50 bg-amber-500/10 hover:bg-amber-500/15 hover:border-amber-400 text-left transition-all cursor-pointer"
+          >
+            <div className="w-12 h-12 rounded-xl bg-amber-500/15 border border-amber-500/40 flex items-center justify-center text-amber-400">
+              <Rocket className="w-6 h-6" />
+            </div>
+            <div>
+              <p className="text-lg font-bold text-white">Get a New Business Line</p>
+              <p className="text-sm text-zinc-400 mt-1">
+                We&rsquo;ll buy you a brand-new phone number in any area code you want. Hand it out to customers
+                right away.
+              </p>
+            </div>
+          </button>
 
           <button
-            id="claim-number-button"
+            id="phone-path-existing-button"
             type="button"
-            onClick={handleClaimNumber}
-            disabled={areaCode.length !== 3 || isProvisioning}
-            className="min-h-[44px] flex items-center justify-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 font-semibold px-6 py-3 rounded-lg shadow-lg shadow-amber-500/25 transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            onClick={() => {
+              setErrorMessage(null);
+              setPhoneNumberPath('existing');
+            }}
+            className="flex flex-col items-start gap-3 p-6 rounded-xl border-2 border-zinc-800 bg-zinc-950/70 hover:border-cyan-500/50 hover:bg-cyan-500/5 text-left transition-all cursor-pointer"
           >
-            {isProvisioning ? (
-              <>
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Claiming your number...
-              </>
-            ) : (
-              <>
-                <PhoneCall className="w-4 h-4" />
-                Claim Number
-              </>
-            )}
+            <div className="w-12 h-12 rounded-xl bg-cyan-500/10 border border-cyan-500/30 flex items-center justify-center text-cyan-400">
+              <PhoneForwarded className="w-6 h-6" />
+            </div>
+            <div>
+              <p className="text-lg font-bold text-white">Use My Existing Number</p>
+              <p className="text-sm text-zinc-400 mt-1">
+                Keep the number you already advertise. We&rsquo;ll still provision a background AI line for you to
+                forward your calls to.
+              </p>
+            </div>
+          </button>
+        </div>
+      )}
+
+      {step === 1 && phoneNumberPath === 'existing' && (
+        <div
+          id="existing-number-explainer"
+          className="mt-5 ml-0 sm:ml-[60px] p-4 rounded-lg bg-cyan-500/5 border border-cyan-500/30 flex items-start gap-3"
+        >
+          <CircleAlert className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+          <p className="text-xs text-zinc-300 leading-relaxed">
+            Your customers keep dialing the number they already know. We&rsquo;ll provision a dedicated background
+            number for your AI receptionist below — once it&rsquo;s live, just set up call forwarding from your
+            existing number to it (your phone carrier can usually do this in a couple of minutes) and every call
+            will reach your AI automatically.
+          </p>
+        </div>
+      )}
+
+      {step === 1 && (phoneNumberPath === 'new' || phoneNumberPath === 'existing') && (
+        <div className="mt-5 ml-0 sm:ml-[60px] space-y-3">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 scroll-mt-24">
+            <input
+              id="area-code-input"
+              type="text"
+              inputMode="numeric"
+              maxLength={3}
+              placeholder="415"
+              value={areaCode}
+              onChange={(e) => setAreaCode(e.target.value.replace(/\D/g, '').slice(0, 3))}
+              disabled={isProvisioning}
+              className="w-full sm:w-28 min-h-[44px] bg-zinc-950/70 border border-zinc-800 rounded-lg px-4 py-3 text-center text-lg font-semibold tracking-widest text-white placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50 disabled:opacity-60 scroll-mt-24"
+            />
+
+            <button
+              id="claim-number-button"
+              type="button"
+              onClick={handleClaimNumber}
+              disabled={areaCode.length !== 3 || isProvisioning}
+              className="min-h-[44px] flex items-center justify-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 font-semibold px-6 py-3 rounded-lg shadow-lg shadow-amber-500/25 transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+            >
+              {isProvisioning ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Claiming your number...
+                </>
+              ) : (
+                <>
+                  <PhoneCall className="w-4 h-4" />
+                  {phoneNumberPath === 'existing' ? 'Provision Background Number' : 'Claim Number'}
+                </>
+              )}
+            </button>
+          </div>
+
+          <button
+            id="phone-path-back-button"
+            type="button"
+            onClick={() => {
+              setErrorMessage(null);
+              setPhoneNumberPath('choice');
+            }}
+            disabled={isProvisioning}
+            className="flex items-center gap-1.5 text-xs text-zinc-500 hover:text-zinc-300 transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            <ArrowLeft className="w-3.5 h-3.5" />
+            Back
           </button>
         </div>
       )}
 
       {step === 2 && twilioPhoneNumber && (
         <div className="mt-5 ml-0 sm:ml-[60px] space-y-4">
+          {/*
+            HUGE, undeniably clear display of the live number — this is the
+            single number the owner needs to know (to hand to customers, or
+            to forward their existing line to), so it's rendered far larger
+            than any other text in the console.
+          */}
+          <div
+            id="twilio-phone-number-display"
+            className="p-6 rounded-xl bg-gradient-to-br from-emerald-500/10 to-cyan-500/5 border-2 border-emerald-500/40 text-center"
+          >
+            <p className="text-xs font-semibold uppercase tracking-widest text-emerald-400 mb-2">
+              Your AI Receptionist&rsquo;s Live Number
+            </p>
+            <p className="text-4xl sm:text-5xl font-black tracking-tight text-white break-all [font-variant-numeric:tabular-nums]">
+              {formatPhoneNumber(twilioPhoneNumber)}
+            </p>
+          </div>
+
           <div className="flex items-center gap-2 text-xs text-emerald-400">
             <ArrowRight className="w-3.5 h-3.5" />
             <span>Share this number with customers, or forward your existing business line to it.</span>

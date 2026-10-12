@@ -195,10 +195,17 @@ export async function deployVapiAssistant({
   // when none is supplied do we fall back to the auto-generated prompt.
   const resolvedSystemPrompt = trimmedSystemPrompt || buildSystemPrompt(industryLabel, trimmedCompanyName);
 
+  // Vapi rejects assistant names longer than 40 characters (HTTP 400). A long
+  // `trimmedCompanyName` can easily push `${name} — FluxFox Receptionist` past
+  // that limit, so the final name is always strictly clamped to 40 chars
+  // right before it's placed on the payload — never sent un-clamped.
+  const rawName = trimmedCompanyName
+    ? `${trimmedCompanyName} — FluxFox Receptionist`
+    : `FluxFox Receptionist — ${industryLabel}`;
+  const resolvedName = rawName.slice(0, 40);
+
   const payload = {
-    name: trimmedCompanyName
-      ? `${trimmedCompanyName} — FluxFox Receptionist`
-      : `FluxFox Receptionist — ${industryLabel}`,
+    name: resolvedName,
     firstMessage: trimmedCompanyName
       ? `Thanks for calling ${trimmedCompanyName}! I can help you schedule ${industryLabel} service. What can I help you with today?`
       : `Thanks for calling! I can help you schedule ${industryLabel} service. What can I help you with today?`,
