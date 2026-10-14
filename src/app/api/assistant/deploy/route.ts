@@ -88,12 +88,17 @@ export async function POST(request: Request): Promise<NextResponse<DeploySuccess
 
   const resolvedSystemPrompt = typeof systemPrompt === 'string' && systemPrompt.trim() ? systemPrompt : undefined;
 
+  // Always send the live request origin to Vapi as the webhook base URL,
+  // so call events reach /api/webhook/vapi even with zero env vars set.
+  const origin = new URL(request.url).origin;
+
   let assistant;
   try {
     assistant = await deployVapiAssistant({
       industry,
       companyName: resolvedCompanyName,
       systemPrompt: resolvedSystemPrompt,
+      baseUrl: origin,
     });
   } catch (err) {
     if (err instanceof VapiApiError) {

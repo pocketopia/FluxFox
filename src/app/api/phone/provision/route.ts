@@ -150,8 +150,12 @@ export async function POST(request: Request): Promise<NextResponse<ProvisionSucc
   const timezoneAreaCode = provisioned.phoneNumber.replace(/^\+1/, '').slice(0, 3);
   const timezone = getTimezoneFromAreaCode(timezoneAreaCode);
 
+  // Always send the live request origin to Vapi as the webhook base URL,
+  // so call events reach /api/webhook/vapi even with zero env vars set.
+  const origin = new URL(request.url).origin;
+
   try {
-    await updateAssistantTimezone(vapiAssistantId, timezone);
+    await updateAssistantTimezone(vapiAssistantId, timezone, origin);
   } catch (err) {
     const message =
       err instanceof VapiApiError

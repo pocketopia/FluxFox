@@ -7,16 +7,30 @@ const VAPI_API_BASE_URL = 'https://api.vapi.ai';
  * `/api/webhook/vapi`. Returns an empty object when no base URL is
  * configured, so nothing is ever sent with a fabricated/relative URL.
  */
-function getVapiServerConfig(): { serverUrl?: string; serverMessages?: string[] } {
-  const baseUrl =
+function resolveBaseUrl(baseUrl?: string): string {
+  const resolved =
+    baseUrl?.trim() ||
     process.env.NEXT_PUBLIC_SITE_URL ||
     process.env.NEXT_PUBLIC_APP_URL ||
-    (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : '');
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : '') ||
+    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '');
 
-  if (!baseUrl) return {};
+  return resolved.replace(/\/$/, '');
+}
+
+/** The full webhook URL Vapi should call, or '' when no base URL can be resolved. */
+function resolveWebhookUrl(baseUrl?: string): string {
+  const resolvedBase = resolveBaseUrl(baseUrl);
+  return resolvedBase ? `${resolvedBase}/api/webhook/vapi` : '';
+}
+
+function getVapiServerConfig(baseUrl?: string): { serverUrl?: string; serverMessages?: string[] } {
+  const webhookUrl = resolveWebhookUrl(baseUrl);
+
+  if (!webhookUrl) return {};
 
   return {
-    serverUrl: `${baseUrl.replace(/\/$/, '')}/api/webhook/vapi`,
+    serverUrl: webhookUrl,
     serverMessages: ['tool-calls', 'end-of-call-report'],
   };
 }
@@ -50,6 +64,11 @@ export interface DeployAssistantParams {
    * "Write it myself" path).
    */
   systemPrompt?: string;
+  /**
+   * Public origin of this deployment (e.g. `new URL(request.url).origin`).
+   * Takes priority over env vars when building Vapi's webhook `serverUrl`.
+   */
+  baseUrl?: string;
 }
 
 /** The subset of the Vapi `Assistant` response shape this module relies on. */
@@ -145,9 +164,14 @@ export function generateSuggestedPrompt(industry: string, companyName: string): 
  * calendar booking. Field names and required set are fixed by design:
  * customer_name, customer_phone, customer_email, project_type, date_time.
  */
-function buildBookAppointmentTool(industryLabel: string) {
+function buildBookAppointmentTool(industryLabel: string, baseUrl?: string) {
+  const webhookUrl = resolveWebhookUrl(baseUrl);
+
   return {
     type: 'function' as const,
+    // Vapi's tool-level `server.url` (newer API) — set alongside the
+    // assistant-level `serverUrl` so tool calls always reach our webhook.
+    ...(webhookUrl ? { server: { url: webhookUrl } } : {}),
     function: {
       name: 'book_appointment',
       description:
@@ -195,6 +219,7 @@ export async function deployVapiAssistant({
   industry,
   companyName,
   systemPrompt,
+  baseUrl,
 }: DeployAssistantParams): Promise<VapiAssistant> {
   const apiKey = process.env.VAPI_PRIVATE_API_KEY;
 
@@ -239,9 +264,9 @@ export async function deployVapiAssistant({
           content: resolvedSystemPrompt,
         },
       ],
-      tools: [buildBookAppointmentTool(industryLabel)],
+      tools: [buildBookAppointmentTool(industryLabel, baseUrl)],
     },
-    ...getVapiServerConfig(),
+    ...getVapiServerConfig(baseUrl),
   };
 
   let response: Response;
@@ -350,7 +375,11 @@ async function fetchVapiAssistant(assistantId: string, apiKey: string): Promise<
  * into a strict HTTP error response — the caller must not silently
  * swallow this failure and report the phone number as fully provisioned.
  */
-export async function updateAssistantTimezone(assistantId: string, timezone: string): Promise<VapiAssistant> {
+export async function updateAssistantTimezone(
+  assistantId: string,
+  timezone: string,
+  baseUrl?: string
+): Promise<VapiAssistant> {
   const apiKey = process.env.VAPI_PRIVATE_API_KEY;
 
   if (!apiKey) {
@@ -369,7 +398,9 @@ export async function updateAssistantTimezone(assistantId: string, timezone: str
 
   const assistant = await fetchVapiAssistant(trimmedAssistantId, apiKey);
 
-  const model = assistant.model as { messages?: { role?: string; content?: string }[] } | undefined;
+  const model = assistant.model as
+    | { messages?: { role?: string; content?: string }[]; tools?: Record<string, unknown>[] }
+    | undefined;
   const systemMessage = model?.messages?.find((m) => m.role === 'system');
   const currentPrompt = typeof systemMessage?.content === 'string' ? systemMessage.content : '';
 
@@ -383,6 +414,15 @@ export async function updateAssistantTimezone(assistantId: string, timezone: str
     m.role === 'system' ? { ...m, content: appendTimezoneInstructions(currentPrompt, trimmedTimezone) } : m
   );
 
+  // Populate the tool-level `server.url` on every existing tool (the
+  // assistant's own tool list is preserved) so both Vapi's newer tool-level
+  // server and the assistant-level `serverUrl` point at our webhook.
+  const webhookUrl = resolveWebhookUrl(baseUrl);
+  const updatedTools =
+    webhookUrl && Array.isArray(model.tools)
+      ? model.tools.map((tool) => ({ ...tool, server: { url: webhookUrl } }))
+      : model.tools;
+
   let response: Response;
   try {
     response = await fetch(`${VAPI_API_BASE_URL}/assistant/${trimmedAssistantId}`, {
@@ -395,8 +435,9 @@ export async function updateAssistantTimezone(assistantId: string, timezone: str
         model: {
           ...model,
           messages: updatedMessages,
+          ...(updatedTools ? { tools: updatedTools } : {}),
         },
-        ...getVapiServerConfig(),
+        ...getVapiServerConfig(baseUrl),
       }),
     });
   } catch (networkError) {
