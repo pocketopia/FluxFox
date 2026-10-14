@@ -21,6 +21,12 @@ create table if not exists public.users (
 alter table public.users
   add column if not exists vapi_assistant_id text;
 
+-- 1b-2. Day 4: add the Twilio business line column (see
+-- /api/phone/provision), read by the dashboard and FluxFoxConsole wizard.
+-- (safe/idempotent for databases that already ran earlier migrations above)
+alter table public.users
+  add column if not exists twilio_phone_number text;
+
 -- 1c. Day 8: add the Stripe subscription paywall columns
 -- (safe/idempotent for databases that already ran earlier migrations above)
 alter table public.users
@@ -90,11 +96,20 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
   after insert on auth.users
   for each row execute function public.handle_new_user();
+-- 6b. Backfill: populate public.users from any pre-existing auth.users rows
+-- (idempotent; safe to re-run)
+insert into public.users (id, email, full_name, avatar_url)
+select id, email, raw_user_meta_data->>'full_name', raw_user_meta_data->>'avatar_url'
+from auth.users
+on conflict (id) do nothing;
+
+
 
 -- Comment documentation on columns
 comment on table public.users is 'FluxFox core user directory and OAuth token vault';
 comment on column public.users.google_refresh_token is 'Offline access refresh token required to write to https://www.googleapis.com/auth/calendar.events';
 comment on column public.users.vapi_assistant_id is 'The Vapi.ai assistant id deployed for this user''s AI receptionist (see /api/assistant/deploy).';
+comment on column public.users.twilio_phone_number is 'The purchased Twilio phone number bound to this user''s Vapi assistant (see /api/phone/provision).';
 comment on column public.users.stripe_customer_id is 'The Stripe Customer id created for this user (see /api/stripe/checkout and /api/stripe/webhook).';
 comment on column public.users.subscription_status is 'The FluxFox subscription state for this user: ''inactive'' | ''active'' (set to ''active'' by /api/stripe/webhook on checkout.session.completed, or by /api/apple/verify-receipt on a verified Apple IAP subscription).';
 comment on column public.users.apple_original_transaction_id is 'The App Store original_transaction_id for this user''s active auto-renewable subscription (see /api/apple/verify-receipt).';
@@ -151,3 +166,31 @@ comment on table public.call_logs is 'Telemetry log of every inbound Vapi tool-c
 comment on column public.call_logs.assistant_id is 'The Vapi assistant id (message.assistant.id / message.call.assistantId) that received the call.';
 comment on column public.call_logs.customer_phone is 'The caller-provided customer_phone from the book_appointment tool call arguments, if available.';
 comment on column public.call_logs.raw_payload is 'The entire raw Vapi webhook request body (JSON), stored verbatim for this tool-call event.';
+
+-- ==============================================================================
+-- SCHEMA USAGE + TABLE GRANTS
+-- RLS policies above restrict *row* access, but PostgREST additionally
+-- requires explicit SQL-level GRANTs on the schema and tables themselves
+-- for each role it proxies (anon, authenticated, service_role) — a missing
+-- grant (as opposed to a missing table) is a common cause of PGRST205.
+-- ==============================================================================
+
+-- 11. Schema usage
+grant usage on schema public to anon, authenticated, service_role;
+
+-- 12. public.users table grants
+grant select, insert, update on public.users to authenticated;
+grant select, insert, update, delete on public.users to service_role;
+
+-- 13. public.call_logs table grants
+grant select on public.call_logs to authenticated;
+grant select, insert, update, delete on public.call_logs to service_role;
+
+-- 14. Default privileges for future tables created in this schema
+alter default privileges in schema public
+  grant select, insert, update, delete on tables to service_role;
+
+-- 15. Flush the PostgREST schema cache so it immediately recognizes the
+-- tables/columns/grants above instead of waiting for its next periodic
+-- refresh.
+NOTIFY pgrst, 'reload schema';
