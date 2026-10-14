@@ -34,26 +34,59 @@ interface VapiToolCallItem {
   type?: string;
   /** Some Vapi payload variants place the function name/args flat on the item. */
   name?: string;
+  arguments?: string | Record<string, unknown>;
   parameters?: Record<string, unknown>;
   function?: VapiToolCallFunction;
+  /** `toolWithToolCallList` entries nest the actual call here (the outer `function` is the tool definition). */
+  toolCall?: VapiToolCallItem;
+}
+
+interface VapiCallInfo {
+  id?: string;
+  assistantId?: string;
+  assistant?: { id?: string };
+  customer?: { number?: string };
+  [key: string]: unknown;
 }
 
 interface VapiWebhookMessage {
   type?: string;
+  toolCalls?: VapiToolCallItem[];
   toolCallList?: VapiToolCallItem[];
+  toolWithToolCallList?: VapiToolCallItem[];
   assistant?: { id?: string; [key: string]: unknown };
-  call?: {
-    id?: string;
-    assistantId?: string;
-    assistant?: { id?: string };
-    customer?: { number?: string };
-    [key: string]: unknown;
-  };
+  call?: VapiCallInfo;
   [key: string]: unknown;
 }
 
 interface VapiWebhookPayload {
   message?: VapiWebhookMessage;
+  /** Some Vapi payload variants also expose these at the body's top level. */
+  assistant?: { id?: string; [key: string]: unknown };
+  call?: VapiCallInfo;
+}
+
+/**
+ * Surfaced on every `tool-calls` / `end-of-call-report` JSON response so
+ * operators can see exactly why telemetry or booking failed (Vapi ignores
+ * unknown top-level keys, so this never affects the voice flow).
+ */
+interface WebhookDiagnostics {
+  telemetryLogged: boolean;
+  telemetryError?: string;
+  bookingError?: string;
+}
+
+interface TelemetryOutcome {
+  logged: boolean;
+  error?: string;
+}
+
+/** A tool call flattened from any of Vapi's payload shapes. */
+interface NormalizedToolCall {
+  id?: string;
+  name?: string;
+  args: Record<string, unknown> | null;
 }
 
 interface BookAppointmentArgs {
@@ -83,35 +116,106 @@ function parseFunctionArguments(
   }
 }
 
-/** Validates that every required booking field is present as a non-empty string. */
-function extractBookAppointmentArgs(raw: Record<string, unknown> | null): BookAppointmentArgs | null {
-  if (!raw) return null;
+/** Converts a string/number argument value into a trimmed non-empty string, else null. */
+function coerceArgString(value: unknown): string | null {
+  if (typeof value === 'string') return value.trim() || null;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return null;
+}
 
-  const fields = ['customer_name', 'customer_phone', 'customer_email', 'project_type', 'date_time'] as const;
-  const result: Record<string, string> = {};
+/** Snake_case booking field -> its camelCase alias the model occasionally emits. */
+const BOOKING_FIELD_ALIASES: Record<keyof BookAppointmentArgs, string> = {
+  customer_name: 'customerName',
+  customer_phone: 'customerPhone',
+  customer_email: 'customerEmail',
+  project_type: 'projectType',
+  date_time: 'dateTime',
+};
+
+/**
+ * Validates that every required booking field is present as a non-empty
+ * string (accepting a camelCase alias for each). Returns either the clean
+ * args or the exact list of missing fields for diagnostics.
+ */
+function extractBookAppointmentArgs(
+  raw: Record<string, unknown> | null
+): { args: BookAppointmentArgs; missing: [] } | { args: null; missing: string[] } {
+  const fields = Object.keys(BOOKING_FIELD_ALIASES) as (keyof BookAppointmentArgs)[];
+
+  if (!raw) return { args: null, missing: fields };
+
+  const result: Partial<BookAppointmentArgs> = {};
+  const missing: string[] = [];
 
   for (const field of fields) {
-    const value = raw[field];
-    if (typeof value !== 'string' || !value.trim()) return null;
-    result[field] = value.trim();
+    const value = coerceArgString(raw[field]) ?? coerceArgString(raw[BOOKING_FIELD_ALIASES[field]]);
+    if (value) {
+      result[field] = value;
+    } else {
+      missing.push(field);
+    }
   }
 
-  return result as unknown as BookAppointmentArgs;
+  if (missing.length > 0) return { args: null, missing };
+  return { args: result as BookAppointmentArgs, missing: [] };
 }
 
-/** Extracts the function name from either payload shape Vapi may send. */
-function extractFunctionName(item: VapiToolCallItem): string | undefined {
-  return item.function?.name ?? item.name;
+/**
+ * Flattens every tool call Vapi may send — across `message.toolCalls`,
+ * `message.toolCallList`, and `message.toolWithToolCallList` — into one
+ * list, normalizing the id / function name / arguments wherever they live:
+ *   - `tc.function.{name,arguments}`            (arguments string OR object)
+ *   - `tc.toolCall.function.{name,arguments}`   (toolWithToolCallList)
+ *   - `tc.name` / `tc.arguments` / `tc.parameters` (flat variants)
+ */
+function collectToolCalls(message: VapiWebhookMessage): NormalizedToolCall[] {
+  const lists = [message.toolCalls, message.toolCallList, message.toolWithToolCallList];
+  const normalized: NormalizedToolCall[] = [];
+
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+
+    for (const item of list) {
+      if (!item || typeof item !== 'object') continue;
+
+      // For `toolWithToolCallList`, the outer `function` is the tool
+      // *definition* (no arguments); the real call lives under `toolCall`.
+      const inner = item.toolCall;
+
+      const rawArguments =
+        inner?.function?.arguments ??
+        item.function?.arguments ??
+        inner?.arguments ??
+        inner?.parameters ??
+        item.arguments ??
+        item.parameters;
+
+      normalized.push({
+        id: inner?.id ?? item.id,
+        name: inner?.function?.name ?? item.function?.name ?? inner?.name ?? item.name,
+        args: parseFunctionArguments(rawArguments),
+      });
+    }
+  }
+
+  return normalized;
 }
 
-/** Extracts the raw (unparsed) function arguments from either payload shape Vapi may send. */
-function extractRawArguments(item: VapiToolCallItem): string | Record<string, unknown> | undefined {
-  return item.function?.arguments ?? item.parameters;
-}
-
-/** Locates the `vapi_assistant_id` regardless of where Vapi places it on the message. */
-function extractAssistantId(message: VapiWebhookMessage): string | null {
-  return message.assistant?.id ?? message.call?.assistantId ?? message.call?.assistant?.id ?? null;
+/**
+ * Locates the `vapi_assistant_id` wherever Vapi places it: the message
+ * (`assistant.id`, `call.assistantId`, `call.assistant.id`) or the body's
+ * top level (`assistant.id`, `call.assistantId`).
+ */
+function extractAssistantId(message: VapiWebhookMessage | undefined, body: VapiWebhookPayload): string | null {
+  return (
+    message?.assistant?.id ||
+    message?.call?.assistantId ||
+    message?.call?.assistant?.id ||
+    body.assistant?.id ||
+    body.call?.assistantId ||
+    body.call?.assistant?.id ||
+    null
+  );
 }
 
 /**
@@ -139,17 +243,17 @@ function getSupabaseServiceRoleClient() {
  * phone number (when available from the real `book_appointment` args),
  * and the entire raw incoming Vapi payload verbatim.
  *
- * This is deliberately fire-and-forget and never throws: telemetry must
- * never disrupt the voice response Vapi is waiting on. Any Supabase
- * client-init failure or insert error is caught and swallowed (logged to
- * the server console for operator visibility only) — no mock payload is
- * ever substituted, and a logging failure never surfaces to the caller.
+ * This never throws: telemetry must never disrupt the voice response
+ * Vapi is waiting on. Any Supabase client-init failure or insert error is
+ * caught, logged to the server console, and RETURNED as
+ * `{ logged: false, error }` so the route can surface it in the response's
+ * `diagnostics` field — no mock payload is ever substituted.
  */
 async function logCallTelemetry(
   assistantId: string,
   customerPhone: string | null,
   rawPayload: VapiWebhookPayload
-): Promise<void> {
+): Promise<TelemetryOutcome> {
   try {
     const supabase = getSupabaseServiceRoleClient();
     const { error } = await supabase.from('call_logs').insert({
@@ -160,13 +264,24 @@ async function logCallTelemetry(
 
     if (error) {
       console.error('[FluxFox Telemetry] Failed to insert call_logs row:', error.message);
+      return { logged: false, error: `call_logs insert failed: ${error.message}` };
     }
+
+    return { logged: true };
   } catch (err) {
-    console.error(
-      '[FluxFox Telemetry] Failed to log call telemetry:',
-      err instanceof Error ? err.message : 'unknown error'
-    );
+    const reason = err instanceof Error ? err.message : 'unknown error';
+    console.error('[FluxFox Telemetry] Failed to log call telemetry:', reason);
+    return { logged: false, error: reason };
   }
+}
+
+/** Builds the `diagnostics` response field from a telemetry outcome and optional booking error. */
+function buildDiagnostics(telemetry: TelemetryOutcome, bookingError?: string): WebhookDiagnostics {
+  return {
+    telemetryLogged: telemetry.logged,
+    ...(telemetry.error ? { telemetryError: telemetry.error } : {}),
+    ...(bookingError ? { bookingError } : {}),
+  };
 }
 
 /**
@@ -230,18 +345,22 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   const message = payload.message;
+  const assistantId = extractAssistantId(message, payload);
 
   // Every finished call (booked or not) is logged so it shows up in the
-  // dashboard's Recent Calls table. `logCallTelemetry` never throws, and
-  // Vapi only needs a 200 acknowledgement for this message type.
+  // dashboard's Recent Calls table. Vapi only needs a 200 acknowledgement
+  // for this message type; `diagnostics` reports whether the insert worked.
   if (message?.type === 'end-of-call-report') {
-    const endedAssistantId = extractAssistantId(message);
-    if (endedAssistantId) {
-      await logCallTelemetry(endedAssistantId, message.call?.customer?.number ?? null, payload);
-    } else {
-      console.error('[FluxFox Telemetry] end-of-call-report had no assistant id; call_logs row skipped.');
-    }
-    return NextResponse.json({}, { status: 200 });
+    const telemetry: TelemetryOutcome = assistantId
+      ? await logCallTelemetry(
+          assistantId,
+          message.call?.customer?.number ?? payload.call?.customer?.number ?? null,
+          payload
+        )
+      : { logged: false, error: 'end-of-call-report had no assistant id; call_logs row skipped.' };
+
+    if (telemetry.error) console.error('[FluxFox Telemetry]', telemetry.error);
+    return NextResponse.json({ diagnostics: buildDiagnostics(telemetry) }, { status: 200 });
   }
 
   if (!message || message.type !== 'tool-calls') {
@@ -250,28 +369,45 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({}, { status: 200 });
   }
 
-  const toolCallList = Array.isArray(message.toolCallList) ? message.toolCallList : [];
-  const bookAppointmentCall = toolCallList.find(
-    (item) => extractFunctionName(item) === BOOK_APPOINTMENT_FUNCTION_NAME
-  );
+  const bookAppointmentCall = collectToolCalls(message).find((tc) => tc.name === BOOK_APPOINTMENT_FUNCTION_NAME);
 
   if (!bookAppointmentCall || !bookAppointmentCall.id) {
+    const reason = `No "${BOOK_APPOINTMENT_FUNCTION_NAME}" tool call (with an id) was found in message.toolCalls / toolCallList / toolWithToolCallList.`;
     return NextResponse.json(
-      { error: `No "${BOOK_APPOINTMENT_FUNCTION_NAME}" tool call was found in the payload.` },
+      {
+        error: reason,
+        diagnostics: buildDiagnostics({ logged: false, error: 'Skipped: no book_appointment tool call.' }, reason),
+      },
       { status: 400 }
     );
   }
 
   const toolCallId = bookAppointmentCall.id;
 
-  const assistantId = extractAssistantId(message);
   if (!assistantId) {
-    return NextResponse.json({ error: 'No assistant id was found on the webhook payload.' }, { status: 400 });
+    const reason =
+      'No assistant id was found (checked message.assistant.id, message.call.assistantId, body.assistant.id, body.call.assistantId).';
+    return NextResponse.json(
+      {
+        error: reason,
+        diagnostics: buildDiagnostics({ logged: false, error: 'Skipped: no assistant id.' }, reason),
+      },
+      { status: 400 }
+    );
   }
 
-  const args = extractBookAppointmentArgs(parseFunctionArguments(extractRawArguments(bookAppointmentCall)));
+  const { args, missing } = extractBookAppointmentArgs(bookAppointmentCall.args);
+
+  // Telemetry is recorded once per tool-call invocation, before any booking
+  // branch, so `diagnostics` always reports it — even when booking fails.
+  const telemetry = await logCallTelemetry(
+    assistantId,
+    args?.customer_phone ?? message.call?.customer?.number ?? payload.call?.customer?.number ?? null,
+    payload
+  );
 
   if (!args) {
+    const bookingError = `Missing or empty booking arguments: ${missing.join(', ')}.`;
     const results: ToolCallResult[] = [
       {
         toolCallId,
@@ -279,7 +415,7 @@ export async function POST(request: Request): Promise<NextResponse> {
           'I was missing some required booking details (customer name, phone, email, project type, or date/time). The appointment was not booked.',
       },
     ];
-    return NextResponse.json({ results }, { status: 200 });
+    return NextResponse.json({ results, diagnostics: buildDiagnostics(telemetry, bookingError) }, { status: 200 });
   }
 
   // DAY 9 EDGE CASE: the model can hallucinate a malformed/ambiguous
@@ -294,24 +430,34 @@ export async function POST(request: Request): Promise<NextResponse> {
     timeRange = null;
   }
 
+  /**
+   * Every booking failure below is returned as a 200 `results` entry Vapi
+   * can speak to the caller, plus the exact technical reason under
+   * `diagnostics.bookingError` — nothing is swallowed.
+   */
+  const failBooking = (spoken: string, bookingError: string): NextResponse => {
+    console.error('[FluxFox Booking]', bookingError);
+    const results: ToolCallResult[] = [{ toolCallId, result: spoken }];
+    return NextResponse.json({ results, diagnostics: buildDiagnostics(telemetry, bookingError) }, { status: 200 });
+  };
+
+  const BOOKING_UNAVAILABLE_SPOKEN =
+    'I was unable to reach the business calendar to book that appointment. Please try again or contact the business directly.';
+
   if (!timeRange) {
-    const results: ToolCallResult[] = [
-      {
-        toolCallId,
-        result: 'System error: Date format invalid. Ask the user to clarify the date and time.',
-      },
-    ];
-    await logCallTelemetry(assistantId, args.customer_phone, payload);
-    return NextResponse.json({ results }, { status: 200 });
+    return failBooking(
+      'System error: Date format invalid. Ask the user to clarify the date and time.',
+      `date_time "${args.date_time}" is not a strict ISO-8601 timestamp with a timezone designator (Z or +/-HH:MM).`
+    );
   }
 
   let supabase;
   try {
     supabase = getSupabaseServiceRoleClient();
   } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Failed to initialize the Supabase Service Role client.' },
-      { status: 500 }
+    return failBooking(
+      BOOKING_UNAVAILABLE_SPOKEN,
+      err instanceof Error ? err.message : 'Failed to initialize the Supabase Service Role client.'
     );
   }
 
@@ -322,16 +468,16 @@ export async function POST(request: Request): Promise<NextResponse> {
     .maybeSingle();
 
   if (profileError) {
-    return NextResponse.json(
-      { error: `Failed to query public.users for assistant ${assistantId}: ${profileError.message}` },
-      { status: 500 }
+    return failBooking(
+      BOOKING_UNAVAILABLE_SPOKEN,
+      `Failed to query public.users for assistant ${assistantId}: ${profileError.message}`
     );
   }
 
   if (!profile) {
-    return NextResponse.json(
-      { error: `No FluxFox user was found with vapi_assistant_id "${assistantId}".` },
-      { status: 404 }
+    return failBooking(
+      BOOKING_UNAVAILABLE_SPOKEN,
+      `No FluxFox user was found with vapi_assistant_id "${assistantId}". Redeploy/relink the assistant so public.users.vapi_assistant_id matches.`
     );
   }
 
@@ -341,10 +487,12 @@ export async function POST(request: Request): Promise<NextResponse> {
   try {
     calendar = await getGoogleCalendarClientFromRefreshToken(refreshToken);
   } catch (err) {
-    if (err instanceof GoogleAuthError) {
-      return NextResponse.json({ error: err.message }, { status: 401 });
-    }
-    return NextResponse.json({ error: 'Failed to initialize the Google Calendar client.' }, { status: 500 });
+    return failBooking(
+      BOOKING_UNAVAILABLE_SPOKEN,
+      err instanceof GoogleAuthError
+        ? err.message
+        : `Failed to initialize the Google Calendar client: ${err instanceof Error ? err.message : 'unknown error'}`
+    );
   }
 
   try {
@@ -383,18 +531,13 @@ export async function POST(request: Request): Promise<NextResponse> {
       },
     ];
 
-    await logCallTelemetry(assistantId, args.customer_phone, payload);
-    return NextResponse.json({ results }, { status: 200 });
+    return NextResponse.json({ results, diagnostics: buildDiagnostics(telemetry) }, { status: 200 });
   } catch (err) {
-    const results: ToolCallResult[] = [
-      {
-        toolCallId,
-        result: `I ran into an error while booking the appointment on the calendar: ${
-          err instanceof Error ? err.message : 'unknown Google Calendar error'
-        }. Please try again or contact the business directly.`,
-      },
-    ];
-    return NextResponse.json({ results }, { status: 200 });
+    const reason = err instanceof Error ? err.message : 'unknown Google Calendar error';
+    return failBooking(
+      `I ran into an error while booking the appointment on the calendar: ${reason}. Please try again or contact the business directly.`,
+      `Google Calendar events.insert failed (e.g. invalid_grant = expired/revoked refresh token, or GOOGLE_CLIENT_ID/SECRET mismatch): ${reason}`
+    );
   }
 }
 
