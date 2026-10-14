@@ -402,3 +402,109 @@ export async function updateAssistantTimezone(assistantId: string, timezone: str
 
   return data;
 }
+
+/** The subset of the Vapi `PhoneNumber` response shape this module relies on. */
+export interface VapiPhoneNumber {
+  id: string;
+  number?: string;
+  assistantId?: string | null;
+}
+
+/**
+ * Imports a Twilio number into Vapi and attaches it to an assistant —
+ * idempotently. Without this import, Twilio forwards the call to Vapi's
+ * inbound webhook but Vapi has no record of the number, so the caller
+ * hears Twilio's "An application error has occurred".
+ *
+ * 1. GET /phone-number and look for an existing record with this number.
+ * 2. If found, PATCH /phone-number/{id} with the new `assistantId`.
+ * 3. Otherwise POST /phone-number with Vapi's Twilio import schema:
+ *    { provider: 'twilio', number, twilioAccountSid, twilioAuthToken, assistantId }.
+ *
+ * Every failure (missing config, network, non-2xx, malformed response)
+ * throws `VapiApiError` — nothing is swallowed.
+ */
+export async function linkPhoneNumberToAssistant(
+  e164Number: string,
+  assistantId: string
+): Promise<VapiPhoneNumber> {
+  const apiKey = process.env.VAPI_PRIVATE_API_KEY;
+  const twilioAccountSid = process.env.TWILIO_ACCOUNT_SID;
+  const twilioAuthToken = process.env.TWILIO_AUTH_TOKEN;
+
+  if (!apiKey) {
+    throw new VapiApiError('Server misconfiguration: VAPI_PRIVATE_API_KEY is not set.');
+  }
+  if (!twilioAccountSid || !twilioAuthToken) {
+    throw new VapiApiError('Server misconfiguration: TWILIO_ACCOUNT_SID or TWILIO_AUTH_TOKEN is not set.');
+  }
+
+  const number = e164Number.trim();
+  const trimmedAssistantId = assistantId.trim();
+  if (!number || !trimmedAssistantId) {
+    throw new VapiApiError('Both a phone `number` and an `assistantId` are required to link a Vapi phone number.');
+  }
+
+  const headers = {
+    Authorization: `Bearer ${apiKey}`,
+    'Content-Type': 'application/json',
+  };
+
+  const call = async (url: string, init: RequestInit, action: string): Promise<Response> => {
+    let response: Response;
+    try {
+      response = await fetch(url, init);
+    } catch (networkError) {
+      throw new VapiApiError(
+        `Failed to reach the Vapi API while trying to ${action}: ${
+          networkError instanceof Error ? networkError.message : 'unknown network error'
+        }.`
+      );
+    }
+    if (!response.ok) {
+      const errorBody = await response.text().catch(() => '');
+      throw new VapiApiError(
+        `Vapi API responded with ${response.status} while trying to ${action}${
+          errorBody ? `: ${errorBody}` : ` ${response.statusText}`
+        }`,
+        response.status
+      );
+    }
+    return response;
+  };
+
+  const listResponse = await call(`${VAPI_API_BASE_URL}/phone-number`, { method: 'GET', headers }, 'list phone numbers');
+  const existingList = (await listResponse.json()) as VapiPhoneNumber[];
+  const existing = Array.isArray(existingList) ? existingList.find((p) => p.number === number) : undefined;
+
+  const saveResponse = existing
+    ? await call(
+        `${VAPI_API_BASE_URL}/phone-number/${existing.id}`,
+        { method: 'PATCH', headers, body: JSON.stringify({ assistantId: trimmedAssistantId }) },
+        `attach assistant ${trimmedAssistantId} to existing phone number ${number}`
+      )
+    : await call(
+        `${VAPI_API_BASE_URL}/phone-number`,
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            provider: 'twilio',
+            number,
+            twilioAccountSid,
+            twilioAuthToken,
+            assistantId: trimmedAssistantId,
+          }),
+        },
+        `import phone number ${number}`
+      );
+
+  const data = (await saveResponse.json()) as VapiPhoneNumber;
+
+  if (!data || typeof data.id !== 'string' || !data.id) {
+    throw new VapiApiError(`Vapi API returned a response without a valid phone number id for ${number}.`);
+  }
+
+  return data;
+}
+

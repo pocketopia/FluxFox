@@ -1,6 +1,6 @@
 import Twilio from 'twilio';
 
-const VAPI_INBOUND_WEBHOOK_URL = 'https://outbound.vapi.ai/api/twilio/inbound';
+const VAPI_INBOUND_WEBHOOK_URL = 'https://api.vapi.ai/twilio/inbound_call';
 
 /**
  * Thrown for any failure interacting with the Twilio REST API: missing
@@ -47,17 +47,6 @@ function getTwilioClient(): Twilio.Twilio {
 }
 
 /**
- * Builds the Vapi inbound webhook URL for a given assistant, appending the
- * assistant id as a query parameter so inbound calls to the purchased
- * Twilio number route to the correct Vapi assistant.
- */
-function buildVapiVoiceUrl(vapiAssistantId: string): string {
-  const url = new URL(VAPI_INBOUND_WEBHOOK_URL);
-  url.searchParams.set('assistantId', vapiAssistantId);
-  return url.toString();
-}
-
-/**
  * Searches Twilio for available local incoming phone numbers in the given
  * US area code. Throws `TwilioApiError` on invalid input, network failure,
  * or a Twilio API error — never returns a mocked/fallback number list.
@@ -95,11 +84,52 @@ export async function searchAvailableNumbers(
 }
 
 /**
+ * Re-points an ALREADY-OWNED Twilio number (no purchase) at Vapi's inbound
+ * webhook by setting `voiceUrl` + `voiceMethod: 'POST'`. Used to repair a
+ * number that plays "An application error has occurred" and to make
+ * `/api/phone/provision` idempotent. Throws `TwilioApiError` if the number
+ * isn't in this Twilio account or the update fails.
+ */
+export async function relinkOwnedPhoneNumber(phoneNumber: string): Promise<ProvisionedTwilioNumber> {
+  const e164 = phoneNumber.trim();
+  if (!/^\+[1-9]\d{6,14}$/.test(e164)) {
+    throw new TwilioApiError('`phoneNumber` must be an E.164 number, e.g. "+13605551234".', 400);
+  }
+
+  const client = getTwilioClient();
+
+  try {
+    const [owned] = await client.incomingPhoneNumbers.list({ phoneNumber: e164, limit: 1 });
+
+    if (!owned) {
+      throw new TwilioApiError(`${e164} is not an incoming phone number on this Twilio account.`, 400);
+    }
+
+    const updated = await client.incomingPhoneNumbers(owned.sid).update({
+      voiceUrl: VAPI_INBOUND_WEBHOOK_URL,
+      voiceMethod: 'POST',
+    });
+
+    return {
+      sid: updated.sid,
+      phoneNumber: updated.phoneNumber,
+      voiceUrl: updated.voiceUrl ?? null,
+    };
+  } catch (err) {
+    if (err instanceof TwilioApiError) throw err;
+    throw new TwilioApiError(
+      `Failed to update Twilio number ${e164}: ${err instanceof Error ? err.message : 'unknown Twilio error'}`,
+      (err as { status?: number })?.status
+    );
+  }
+}
+
+/**
  * Purchases the first available local number in the given area code and
- * binds its inbound `VoiceUrl` to Vapi's Twilio webhook, appending the
- * user's Vapi assistant id so inbound calls route to the correct
- * assistant. Throws `TwilioApiError` on any failure — no fallback or mock
- * number is ever returned.
+ * binds its inbound `VoiceUrl` (POST) to Vapi's Twilio inbound webhook.
+ * The number must then be imported into Vapi (see `linkPhoneNumberToAssistant`)
+ * so Vapi knows which assistant answers. Throws `TwilioApiError` on any
+ * failure — no fallback or mock number is ever returned.
  */
 export async function provisionPhoneNumber(
   areaCode: string,
@@ -120,12 +150,11 @@ export async function provisionPhoneNumber(
   }
 
   const client = getTwilioClient();
-  const voiceUrl = buildVapiVoiceUrl(trimmedAssistantId);
 
   try {
     const purchased = await client.incomingPhoneNumbers.create({
       phoneNumber: available[0].phoneNumber,
-      voiceUrl,
+      voiceUrl: VAPI_INBOUND_WEBHOOK_URL,
       voiceMethod: 'POST',
     });
 

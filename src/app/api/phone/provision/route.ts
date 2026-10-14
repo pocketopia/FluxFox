@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
-import { provisionPhoneNumber, TwilioApiError } from '@/lib/twilio';
-import { updateAssistantTimezone, VapiApiError } from '@/lib/vapi';
+import { provisionPhoneNumber, relinkOwnedPhoneNumber, TwilioApiError } from '@/lib/twilio';
+import { linkPhoneNumberToAssistant, updateAssistantTimezone, VapiApiError } from '@/lib/vapi';
 import { getTimezoneFromAreaCode } from '@/utils/timezone';
 
 export const dynamic = 'force-dynamic';
@@ -18,6 +18,8 @@ export const dynamic = 'force-dynamic';
 
 interface ProvisionRequestBody {
   areaCode?: unknown;
+  /** Optional E.164 number you already own in Twilio — relinks it instead of buying a new one. */
+  phoneNumber?: unknown;
 }
 
 interface ProvisionSuccessResponse {
@@ -64,7 +66,7 @@ export async function POST(request: Request): Promise<NextResponse<ProvisionSucc
 
   const { data: profile, error: profileError } = await supabase
     .from('users')
-    .select('vapi_assistant_id')
+    .select('vapi_assistant_id, twilio_phone_number')
     .eq('id', user.id)
     .single();
 
@@ -91,9 +93,17 @@ export async function POST(request: Request): Promise<NextResponse<ProvisionSucc
     return NextResponse.json({ error: 'Request body must be valid JSON.' }, { status: 400 });
   }
 
-  const { areaCode } = body;
+  const { areaCode, phoneNumber: requestedNumber } = body;
 
-  if (typeof areaCode !== 'string' || !/^\d{3}$/.test(areaCode.trim())) {
+  // Idempotency: if the caller names an already-owned number, or this user
+  // already has one saved, relink it (Twilio voiceUrl + Vapi import/PATCH)
+  // instead of buying a second Twilio number.
+  const existingNumber =
+    typeof requestedNumber === 'string' && requestedNumber.trim()
+      ? requestedNumber.trim()
+      : (profile.twilio_phone_number as string | null);
+
+  if (!existingNumber && (typeof areaCode !== 'string' || !/^\d{3}$/.test(areaCode.trim()))) {
     return NextResponse.json(
       { error: 'An `areaCode` string of exactly 3 digits (e.g. "415") is required in the request body.' },
       { status: 400 }
@@ -102,7 +112,9 @@ export async function POST(request: Request): Promise<NextResponse<ProvisionSucc
 
   let provisioned;
   try {
-    provisioned = await provisionPhoneNumber(areaCode, vapiAssistantId);
+    provisioned = existingNumber
+      ? await relinkOwnedPhoneNumber(existingNumber)
+      : await provisionPhoneNumber(areaCode as string, vapiAssistantId);
   } catch (err) {
     if (err instanceof TwilioApiError) {
       const status = err.status && err.status >= 400 && err.status < 500 ? 400 : 500;
@@ -111,13 +123,32 @@ export async function POST(request: Request): Promise<NextResponse<ProvisionSucc
     return NextResponse.json({ error: 'Failed to provision the Twilio phone number.' }, { status: 500 });
   }
 
+  // Import the number into Vapi (or PATCH the existing record) so Vapi
+  // knows which assistant answers it. Without this, Twilio plays "An
+  // application error has occurred". Errors are surfaced, never swallowed.
+  try {
+    await linkPhoneNumberToAssistant(provisioned.phoneNumber, vapiAssistantId);
+  } catch (err) {
+    const message =
+      err instanceof VapiApiError ? err.message : 'Failed to link the phone number to your Vapi assistant.';
+    return NextResponse.json(
+      {
+        error: `Phone number ${provisioned.phoneNumber} is in Twilio, but linking it to Vapi failed: ${message}`,
+      },
+      { status: 500 }
+    );
+  }
+
   // DAY 9: sync the assistant's "brain" to the local timezone of the area
   // code it now answers on, so it resolves {{now}} / relative dates
   // ("tomorrow", "3pm") against the caller's real local time instead of a
   // hardcoded default. The number has already been purchased and bound to
   // this assistant, so a failure here is a real, surfaced error rather
   // than a silently-ignored best-effort step.
-  const timezone = getTimezoneFromAreaCode(areaCode);
+  // Derive the area code from the E.164 number (+1AAAXXXXXXX) so relinking
+  // an existing number syncs the right timezone too.
+  const timezoneAreaCode = provisioned.phoneNumber.replace(/^\+1/, '').slice(0, 3);
+  const timezone = getTimezoneFromAreaCode(timezoneAreaCode);
 
   try {
     await updateAssistantTimezone(vapiAssistantId, timezone);
