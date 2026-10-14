@@ -46,6 +46,7 @@ interface VapiWebhookMessage {
     id?: string;
     assistantId?: string;
     assistant?: { id?: string };
+    customer?: { number?: string };
     [key: string]: unknown;
   };
   [key: string]: unknown;
@@ -229,6 +230,19 @@ export async function POST(request: Request): Promise<NextResponse> {
   }
 
   const message = payload.message;
+
+  // Every finished call (booked or not) is logged so it shows up in the
+  // dashboard's Recent Calls table. `logCallTelemetry` never throws, and
+  // Vapi only needs a 200 acknowledgement for this message type.
+  if (message?.type === 'end-of-call-report') {
+    const endedAssistantId = extractAssistantId(message);
+    if (endedAssistantId) {
+      await logCallTelemetry(endedAssistantId, message.call?.customer?.number ?? null, payload);
+    } else {
+      console.error('[FluxFox Telemetry] end-of-call-report had no assistant id; call_logs row skipped.');
+    }
+    return NextResponse.json({}, { status: 200 });
+  }
 
   if (!message || message.type !== 'tool-calls') {
     // Any other Vapi server-message type (status-update, transcript, etc.)

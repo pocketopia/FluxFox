@@ -1,6 +1,27 @@
 const VAPI_API_BASE_URL = 'https://api.vapi.ai';
 
 /**
+ * Resolves FluxFox's production base URL from the environment and returns
+ * the assistant-level Vapi webhook config (`serverUrl` + `serverMessages`)
+ * so Vapi delivers `tool-calls` and `end-of-call-report` events to
+ * `/api/webhook/vapi`. Returns an empty object when no base URL is
+ * configured, so nothing is ever sent with a fabricated/relative URL.
+ */
+function getVapiServerConfig(): { serverUrl?: string; serverMessages?: string[] } {
+  const baseUrl =
+    process.env.NEXT_PUBLIC_SITE_URL ||
+    process.env.NEXT_PUBLIC_APP_URL ||
+    (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : '');
+
+  if (!baseUrl) return {};
+
+  return {
+    serverUrl: `${baseUrl.replace(/\/$/, '')}/api/webhook/vapi`,
+    serverMessages: ['tool-calls', 'end-of-call-report'],
+  };
+}
+
+/**
  * Thrown for any failure while deploying a Vapi assistant: missing server
  * configuration, invalid input, a network failure reaching Vapi, or a
  * non-2xx response from the Vapi REST API. Callers should map this to a
@@ -220,6 +241,7 @@ export async function deployVapiAssistant({
       ],
       tools: [buildBookAppointmentTool(industryLabel)],
     },
+    ...getVapiServerConfig(),
   };
 
   let response: Response;
@@ -374,6 +396,7 @@ export async function updateAssistantTimezone(assistantId: string, timezone: str
           ...model,
           messages: updatedMessages,
         },
+        ...getVapiServerConfig(),
       }),
     });
   } catch (networkError) {
