@@ -51,8 +51,20 @@ workflows:
           # Expo prebuild writes ios.buildNumber into CFBundleVersion /
           # CURRENT_PROJECT_VERSION, so set it in app.json BEFORE prebuild.
           BUILD_NUMBER="$NEXT" node -e "const fs=require('fs');const p='app.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.expo.ios=j.expo.ios||{};j.expo.ios.buildNumber=process.env.BUILD_NUMBER;fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');"
+      - name: Patch react-native-iap Podspec (RCT-Folly)
+        script: |
+          # RN 0.86+ has no standalone RCT-Folly podspec; strip it from RNIap.
+          # (Also runs via the `postinstall` script; re-run here so it is
+          # guaranteed and verified before CocoaPods resolves dependencies.)
+          node scripts/patch-rniap-podspec.js
+          if grep -E "dependency[[:space:]]*\(?[[:space:]]*['\"]RCT-Folly['\"]" node_modules/react-native-iap/RNIap.podspec; then
+            echo "RCT-Folly dependency is still present in RNIap.podspec" >&2
+            exit 1
+          fi
       - name: Expo Prebuild
-        script: npx expo prebuild --platform ios --clean
+        # --no-install: only generate the native project. Expo must not run
+        # `pod install` itself; the "Install CocoaPods" step below does that.
+        script: npx expo prebuild --platform ios --clean --no-install
       - name: Install CocoaPods
         script: |
           cd ios
