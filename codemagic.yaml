@@ -6,15 +6,45 @@ workflows:
     max_build_duration: 60
     integrations:
       app_store_connect: CodeMagic
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+          source: true
+      cancel_previous_builds: true
     environment:
       groups:
         - AppStore
       vars:
         BUNDLE_ID: "com.fluxfox.app"
         XCODE_SCHEME: "FluxFox"
+        # Numeric Apple ID of the app in App Store Connect (App Information ->
+        # General -> Apple ID). Put it in the `AppStore` group as
+        # APP_STORE_APPLE_ID so build numbers continue from TestFlight's latest.
     scripts:
       - name: Install Dependencies
         script: npm install
+      - name: Set Next Build Number
+        script: |
+          # TestFlight rejects any upload whose buildNumber was already used, so
+          # never ship the static "1" from app.json. Use the higher of:
+          #   (a) latest TestFlight build number + 1 (needs APP_STORE_APPLE_ID)
+          #   (b) Codemagic's monotonic $PROJECT_BUILD_NUMBER
+          LATEST=0
+          if [ -n "$APP_STORE_APPLE_ID" ]; then
+            LATEST=$(app-store-connect get-latest-testflight-build-number "$APP_STORE_APPLE_ID" 2>/dev/null | tail -n 1 | tr -dc '0-9')
+            LATEST=${LATEST:-0}
+          else
+            echo "APP_STORE_APPLE_ID is not set; falling back to PROJECT_BUILD_NUMBER only."
+          fi
+          NEXT=$((LATEST + 1))
+          if [ "$PROJECT_BUILD_NUMBER" -gt "$NEXT" ]; then NEXT=$PROJECT_BUILD_NUMBER; fi
+          echo "Using iOS buildNumber $NEXT (latest TestFlight: $LATEST, project build: $PROJECT_BUILD_NUMBER)"
+          # Expo prebuild writes ios.buildNumber into CFBundleVersion /
+          # CURRENT_PROJECT_VERSION, so set it in app.json BEFORE prebuild.
+          BUILD_NUMBER="$NEXT" node -e "const fs=require('fs');const p='app.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.expo.ios=j.expo.ios||{};j.expo.ios.buildNumber=process.env.BUILD_NUMBER;fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');"
       - name: Expo Prebuild
         script: npx expo prebuild --platform ios --clean
       - name: Install CocoaPods

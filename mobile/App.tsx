@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
-import { Alert, StyleSheet } from 'react-native';
+import { Alert, Platform, StyleSheet } from 'react-native';
 import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import WebView, { type WebViewMessageEvent } from 'react-native-webview';
 import {
@@ -15,9 +15,26 @@ import {
 } from 'react-native-iap';
 
 // Production FluxFox web app URL. Override for local/staging builds via the
-// EXPO_PUBLIC_WEBAPP_URL environment variable (see .env.example).
+// EXPO_PUBLIC_WEBAPP_URL environment variable (see .env.example). `||` (not
+// `??`) so an env var that is set but EMPTY (common in CI) still falls back
+// to the real live deployment instead of loading a blank URL.
 const WEBAPP_URL =
-  process.env.EXPO_PUBLIC_WEBAPP_URL ?? 'https://fluxfox.app';
+  process.env.EXPO_PUBLIC_WEBAPP_URL || 'https://fluxfox.app';
+
+// Standard mobile-browser user agents. Google blocks OAuth (403
+// `disallowed_useragent`) for UAs that identify as an embedded WebView, so the
+// WebView presents itself as Mobile Safari (iOS) / Chrome (Android).
+const IOS_SAFARI_USER_AGENT =
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1';
+const ANDROID_CHROME_USER_AGENT =
+  'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36';
+// `userAgent` REPLACES the WebView's default UA (and with it
+// `applicationNameForUserAgent`), so the `FluxFoxMobileApp` token that
+// `src/components/dashboard/SubscribeButton.tsx` uses to detect this wrapper
+// is appended here explicitly to keep the native purchase bridge working.
+const WEBVIEW_USER_AGENT = `${
+  Platform.OS === 'ios' ? IOS_SAFARI_USER_AGENT : ANDROID_CHROME_USER_AGENT
+} FluxFoxMobileApp`;
 
 // Apple App Store Connect product (SKU) ids for the FluxFox auto-renewable
 // subscription group. These must exactly match the Product IDs configured
@@ -193,7 +210,10 @@ export default function App() {
           style={styles.webview}
           injectedJavaScript={DISABLE_ZOOM_SCRIPT}
           onMessage={handleWebViewMessage}
+          userAgent={WEBVIEW_USER_AGENT}
           applicationNameForUserAgent="FluxFoxMobileApp"
+          sharedCookiesEnabled
+          thirdPartyCookiesEnabled
           javaScriptEnabled
           domStorageEnabled
           startInLoadingState
