@@ -20,6 +20,9 @@ workflows:
       vars:
         BUNDLE_ID: "com.fluxfox.app"
         XCODE_SCHEME: "FluxFox"
+        # Live production web app the mobile WebView loads (read by
+        # mobile/App.tsx at Expo build time).
+        EXPO_PUBLIC_WEBAPP_URL: "https://fluxfox-web.vercel.app"
         # Numeric Apple ID of the app in App Store Connect (App Information ->
         # General -> Apple ID). Put it in the `AppStore` group as
         # APP_STORE_APPLE_ID so build numbers continue from TestFlight's latest.
@@ -40,7 +43,10 @@ workflows:
             echo "APP_STORE_APPLE_ID is not set; falling back to PROJECT_BUILD_NUMBER only."
           fi
           NEXT=$((LATEST + 1))
-          if [ "$PROJECT_BUILD_NUMBER" -gt "$NEXT" ]; then NEXT=$PROJECT_BUILD_NUMBER; fi
+          # Safe floor: PROJECT_BUILD_NUMBER + 10 always clears earlier manual
+          # uploads (build 1, 2, ...). Take the higher of the two values.
+          FLOOR=$((PROJECT_BUILD_NUMBER + 10))
+          if [ "$FLOOR" -gt "$NEXT" ]; then NEXT=$FLOOR; fi
           echo "Using iOS buildNumber $NEXT (latest TestFlight: $LATEST, project build: $PROJECT_BUILD_NUMBER)"
           # Expo prebuild writes ios.buildNumber into CFBundleVersion /
           # CURRENT_PROJECT_VERSION, so set it in app.json BEFORE prebuild.

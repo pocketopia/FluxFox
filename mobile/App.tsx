@@ -19,7 +19,7 @@ import {
 // `??`) so an env var that is set but EMPTY (common in CI) still falls back
 // to the real live deployment instead of loading a blank URL.
 const WEBAPP_URL =
-  process.env.EXPO_PUBLIC_WEBAPP_URL || 'https://fluxfox.app';
+  process.env.EXPO_PUBLIC_WEBAPP_URL || 'https://fluxfox-web.vercel.app';
 
 // Standard mobile-browser user agents. Google blocks OAuth (403
 // `disallowed_useragent`) for UAs that identify as an embedded WebView, so the
