@@ -51,16 +51,19 @@ workflows:
           # Expo prebuild writes ios.buildNumber into CFBundleVersion /
           # CURRENT_PROJECT_VERSION, so set it in app.json BEFORE prebuild.
           BUILD_NUMBER="$NEXT" node -e "const fs=require('fs');const p='app.json';const j=JSON.parse(fs.readFileSync(p,'utf8'));j.expo.ios=j.expo.ios||{};j.expo.ios.buildNumber=process.env.BUILD_NUMBER;fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');"
-      - name: Patch react-native-iap Podspec (RCT-Folly)
+      - name: Patch react-native-iap Podspec (legacy RN pods)
         script: |
-          # RN 0.86+ has no standalone RCT-Folly podspec; strip it from RNIap.
+          # RN 0.86+ (React-Core-prebuilt + ReactNativeDependencies) has no
+          # standalone RCT-Folly / RCTRequired / RCTTypeSafety /
+          # ReactCommon/turbomodule/core podspecs; strip them from RNIap.
           # (Also runs via the `postinstall` script; re-run here so it is
           # guaranteed and verified before CocoaPods resolves dependencies.)
           node scripts/patch-rniap-podspec.js
-          if grep -E "dependency[[:space:]]*\(?[[:space:]]*['\"]RCT-Folly['\"]" node_modules/react-native-iap/RNIap.podspec; then
-            echo "RCT-Folly dependency is still present in RNIap.podspec" >&2
+          if grep -E "dependency[[:space:]]*\(?[[:space:]]*['\"](RCT-Folly|RCTRequired|RCTTypeSafety|ReactCommon/turbomodule/core)['\"]" node_modules/react-native-iap/RNIap.podspec; then
+            echo "A legacy pod dependency is still present in RNIap.podspec" >&2
             exit 1
           fi
+          grep -E "dependency[[:space:]]*\(?[[:space:]]*['\"]React-Core['\"]" node_modules/react-native-iap/RNIap.podspec
       - name: Expo Prebuild
         # --no-install: only generate the native project. Expo must not run
         # `pod install` itself; the "Install CocoaPods" step below does that.

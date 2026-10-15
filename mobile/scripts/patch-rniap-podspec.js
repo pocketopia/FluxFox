@@ -6,8 +6,11 @@
  * `pod install` fail with:
  *   [!] Unable to find a specification for `RCT-Folly` depended upon by `RNIap`
  *
- * This script removes every `s.dependency 'RCT-Folly'` / `"RCT-Folly"` line
- * from node_modules/react-native-iap/RNIap.podspec. It is idempotent, and a
+ * The same applies to the other legacy standalone pods the podspec declares
+ * (RCTRequired, RCTTypeSafety, ReactCommon/turbomodule/core).
+ *
+ * This script removes every `s.dependency` line for those four pods from
+ * node_modules/react-native-iap/RNIap.podspec, keeping `React-Core`. It is idempotent, and a
  * no-op (exit 0) when the package or the line is absent, so it is safe to run
  * from `postinstall` on any machine.
  */
@@ -21,14 +24,24 @@ if (!fs.existsSync(podspecPath)) {
   process.exit(0);
 }
 
+// Legacy standalone pods that no longer exist as separate podspecs on RN 0.86
+// (React-Core-prebuilt + ReactNativeDependencies already provide them).
+// `s.dependency "React-Core"` is intentionally NOT in this list.
+const LEGACY_PODS = ['RCT-Folly', 'RCTRequired', 'RCTTypeSafety', 'ReactCommon/turbomodule/core'];
+
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\\/]/g, '\\$&');
+
 const original = fs.readFileSync(podspecPath, 'utf8');
-const follyDependency = /^[ \t]*s\.dependency\s*\(?\s*(['"])RCT-Folly\1[^\n]*\r?\n?/gm;
-const patched = original.replace(follyDependency, '');
+const legacyDependency = new RegExp(
+  `^[ \\t]*s\\.dependency\\s*\\(?\\s*(['"])(?:${LEGACY_PODS.map(escapeRegExp).join('|')})\\1[^\\n]*\\r?\\n?`,
+  'gm'
+);
+const patched = original.replace(legacyDependency, '');
 
 if (patched === original) {
-  console.log('[patch-rniap-podspec] No RCT-Folly dependency found; already patched.');
+  console.log('[patch-rniap-podspec] No legacy pod dependencies found; already patched.');
   process.exit(0);
 }
 
 fs.writeFileSync(podspecPath, patched);
-console.log('[patch-rniap-podspec] Removed RCT-Folly dependency from RNIap.podspec.');
+console.log(`[patch-rniap-podspec] Removed legacy pod dependencies (${LEGACY_PODS.join(', ')}) from RNIap.podspec.`);
