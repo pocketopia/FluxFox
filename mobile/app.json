@@ -7,6 +7,7 @@
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "dark",
+    "newArchEnabled": false,
     "backgroundColor": "#09090b",
     "splash": {
       "image": "./assets/splash-icon.png",
@@ -15,6 +16,7 @@
     },
     "ios": {
       "supportsTablet": true,
+      "newArchEnabled": false,
       "backgroundColor": "#09090b",
       "bundleIdentifier": "com.fluxfox.app",
       "buildNumber": "1",

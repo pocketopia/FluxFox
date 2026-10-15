@@ -20,6 +20,7 @@ workflows:
       vars:
         BUNDLE_ID: "com.fluxfox.app"
         XCODE_SCHEME: "FluxFox"
+        RCT_NEW_ARCH_ENABLED: "0"
         # Live production web app the mobile WebView loads (read by
         # mobile/App.tsx at Expo build time).
         EXPO_PUBLIC_WEBAPP_URL: "https://fluxfox-web.vercel.app"
@@ -28,7 +29,7 @@ workflows:
         # APP_STORE_APPLE_ID so build numbers continue from TestFlight's latest.
     scripts:
       - name: Install Dependencies
-        script: npm install
+        script: npm install --force
       - name: Set Next Build Number
         script: |
           # TestFlight rejects any upload whose buildNumber was already used, so
@@ -70,23 +71,31 @@ workflows:
         script: npx expo prebuild --platform ios --clean --no-install
       - name: Install CocoaPods
         script: |
+          # Re-apply the RNIap podspec patch right before CocoaPods reads it
+          # (prints the final podspec to the log).
+          node ../scripts/patch-rniap-podspec.js
           cd ios
-          pod install --repo-update
+          pod install || pod install --repo-update
       - name: Fetch Signing Files
         script: |
           keychain initialize
-          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create
+          app-store-connect fetch-signing-files "$BUNDLE_ID" --type IOS_APP_STORE --create --delete-stale-profiles
           keychain add-certificates
-          xcode-project use-profiles
+          # Sign ONLY the app project; never apply the app profile to Pods.xcodeproj.
+          APP_XCODEPROJ=$(find ios -maxdepth 1 -name "*.xcodeproj" ! -name "Pods.xcodeproj" | head -n 1)
+          APP_XCODEPROJ=${APP_XCODEPROJ:-ios/FluxFox.xcodeproj}
+          echo "Using Xcode project: $APP_XCODEPROJ"
+          xcode-project use-profiles --project "$APP_XCODEPROJ"
       - name: Build and Package IPA
         script: |
           DETECTED_WORKSPACE=$(find . -name "*.xcworkspace" | grep -v "node_modules" | grep -v "xcodeproj" | head -n 1)
           xcode-project build-ipa \
             --workspace "$DETECTED_WORKSPACE" \
             --scheme "$XCODE_SCHEME" \
-            --archive-xcargs "CODE_SIGN_STYLE=Manual"
+            --archive-xcargs "CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=N2SVGHFQLB CODE_SIGN_IDENTITY='Apple Distribution'"
     artifacts:
       - build/ios/ipa/*.ipa
+      - mobile/build/ios/ipa/*.ipa
     publishing:
       app_store_connect:
         auth: integration
