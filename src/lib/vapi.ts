@@ -8,14 +8,56 @@ const VAPI_API_BASE_URL = 'https://api.vapi.ai';
  * configured, so nothing is ever sent with a fabricated/relative URL.
  */
 function resolveBaseUrl(baseUrl?: string): string {
-  const resolved =
-    baseUrl?.trim() ||
-    process.env.NEXT_PUBLIC_SITE_URL ||
-    process.env.NEXT_PUBLIC_APP_URL ||
-    (process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : '') ||
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : '');
+  // Every candidate (the caller-supplied origin AND each env fallback) must
+  // pass `toPublicOrigin`, so a mobile WebView / local dev origin such as
+  // `capacitor://localhost`, `ionic://localhost` or `http://localhost:3000`
+  // can NEVER become Vapi's `serverUrl` — Vapi's servers can't reach it.
+  const candidates = [
+    baseUrl,
+    process.env.NEXT_PUBLIC_SITE_URL,
+    process.env.NEXT_PUBLIC_APP_URL,
+    process.env.VERCEL_PROJECT_PRODUCTION_URL ? `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}` : undefined,
+    process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : undefined,
+  ];
 
-  return resolved.replace(/\/$/, '');
+  for (const candidate of candidates) {
+    const origin = toPublicOrigin(candidate);
+    if (origin) return origin;
+  }
+
+  return '';
+}
+
+/**
+ * Returns the bare origin (`https://host`) of a URL only if it is a
+ * publicly reachable http(s) URL. Rejects non-http(s) schemes
+ * (`capacitor://`, `ionic://`, `file://`, `fluxfox://`...), unparsable
+ * values, and loopback/unspecified hosts (`localhost`, `*.localhost`,
+ * `127.x.x.x`, `0.0.0.0`, `[::1]`). Returns '' for anything rejected.
+ */
+function toPublicOrigin(value: string | undefined | null): string {
+  const trimmed = value?.trim().replace(/^["']|["']$/g, '');
+  if (!trimmed) return '';
+
+  let url: URL;
+  try {
+    url = new URL(trimmed);
+  } catch {
+    return '';
+  }
+
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
+
+  const host = url.hostname.toLowerCase();
+  const isLoopback =
+    host === 'localhost' ||
+    host.endsWith('.localhost') ||
+    host === '0.0.0.0' ||
+    host === '[::1]' ||
+    host === '[::]' ||
+    /^127\./.test(host);
+
+  return isLoopback ? '' : url.origin;
 }
 
 /** The full webhook URL Vapi should call, or '' when no base URL can be resolved. */
