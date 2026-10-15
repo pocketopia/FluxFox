@@ -74,12 +74,40 @@ interface VapiWebhookPayload {
 interface WebhookDiagnostics {
   telemetryLogged: boolean;
   telemetryError?: string;
+  /** True when a call_logs row for this same call already existed, so no duplicate was inserted. */
+  telemetryDuplicateSkipped?: boolean;
   bookingError?: string;
 }
 
 interface TelemetryOutcome {
   logged: boolean;
   error?: string;
+  duplicateSkipped?: boolean;
+}
+
+/** A second `call_logs` row for the same assistant within this window is treated as the same call. */
+const DUPLICATE_CALL_WINDOW_MS = 2 * 60 * 1000;
+
+/**
+ * Normalizes a phone number to E.164 (`+1XXXXXXXXXX` for US/Canada).
+ * Accepts `+`-prefixed numbers as-is (digits only), 10-digit national
+ * numbers, and 11-digit numbers starting with 1. Returns null when the
+ * input is empty or can't be confidently normalized.
+ */
+function normalizeToE164(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+
+  const trimmed = raw.trim();
+  const digits = trimmed.replace(/\D/g, '');
+  if (!digits) return null;
+
+  if (trimmed.startsWith('+')) {
+    return digits.length >= 8 && digits.length <= 15 ? `+${digits}` : null;
+  }
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith('1')) return `+${digits}`;
+
+  return null;
 }
 
 /** A tool call flattened from any of Vapi's payload shapes. */
@@ -256,6 +284,34 @@ async function logCallTelemetry(
 ): Promise<TelemetryOutcome> {
   try {
     const supabase = getSupabaseServiceRoleClient();
+
+    // Duplicate guard: one phone call can fire a `tool-calls` event AND an
+    // `end-of-call-report`. Skip the insert if this call is already logged,
+    // matched by Vapi call id; when the payload has no call id, fall back to
+    // "same assistant + same caller within the last 2 minutes".
+    const callId = rawPayload.message?.call?.id ?? rawPayload.call?.id ?? null;
+
+    let duplicateQuery = supabase.from('call_logs').select('id').eq('assistant_id', assistantId).limit(1);
+
+    if (callId) {
+      duplicateQuery = duplicateQuery.eq('raw_payload->message->call->>id', callId);
+    } else if (customerPhone) {
+      duplicateQuery = duplicateQuery
+        .eq('customer_phone', customerPhone)
+        .gte('created_at', new Date(Date.now() - DUPLICATE_CALL_WINDOW_MS).toISOString());
+    }
+
+    if (callId || customerPhone) {
+      const { data: existing, error: lookupError } = await duplicateQuery;
+
+      // A failed lookup must not block logging — fall through and insert.
+      if (lookupError) {
+        console.error('[FluxFox Telemetry] Duplicate lookup failed, inserting anyway:', lookupError.message);
+      } else if (existing && existing.length > 0) {
+        return { logged: true, duplicateSkipped: true };
+      }
+    }
+
     const { error } = await supabase.from('call_logs').insert({
       assistant_id: assistantId,
       customer_phone: customerPhone,
@@ -279,6 +335,7 @@ async function logCallTelemetry(
 function buildDiagnostics(telemetry: TelemetryOutcome, bookingError?: string): WebhookDiagnostics {
   return {
     telemetryLogged: telemetry.logged,
+    ...(telemetry.duplicateSkipped ? { telemetryDuplicateSkipped: true } : {}),
     ...(telemetry.error ? { telemetryError: telemetry.error } : {}),
     ...(bookingError ? { bookingError } : {}),
   };
@@ -354,7 +411,7 @@ export async function POST(request: Request): Promise<NextResponse> {
     const telemetry: TelemetryOutcome = assistantId
       ? await logCallTelemetry(
           assistantId,
-          message.call?.customer?.number ?? payload.call?.customer?.number ?? null,
+          normalizeToE164(message.call?.customer?.number ?? payload.call?.customer?.number),
           payload
         )
       : { logged: false, error: 'end-of-call-report had no assistant id; call_logs row skipped.' };
@@ -400,9 +457,12 @@ export async function POST(request: Request): Promise<NextResponse> {
 
   // Telemetry is recorded once per tool-call invocation, before any booking
   // branch, so `diagnostics` always reports it — even when booking fails.
+  // Prefer the real caller ID Vapi reports; fall back to the number the
+  // caller dictated. Always stored as E.164 so formats stay consistent.
   const telemetry = await logCallTelemetry(
     assistantId,
-    args?.customer_phone ?? message.call?.customer?.number ?? payload.call?.customer?.number ?? null,
+    normalizeToE164(message.call?.customer?.number ?? payload.call?.customer?.number) ??
+      normalizeToE164(args?.customer_phone),
     payload
   );
 

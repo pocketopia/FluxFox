@@ -15,6 +15,15 @@ export class GoogleAuthError extends Error {
 }
 
 /**
+ * Strips whitespace/newlines and any surrounding single or double quotes
+ * that commonly sneak into pasted Vercel env vars, which otherwise cause
+ * Google's `invalid_client` error. Returns '' for null/undefined input.
+ */
+function sanitizeCredential(value: string | null | undefined): string {
+  return (value ?? '').trim().replace(/^["']|["']$/g, '');
+}
+
+/**
  * Builds a fully authorized `calendar_v3.Calendar` client from a raw Google
  * OAuth refresh token, bypassing any Supabase session/cookie lookup. This is
  * the primitive used both by the user-session flow below and by
@@ -26,8 +35,8 @@ export class GoogleAuthError extends Error {
 export async function getGoogleCalendarClientFromRefreshToken(
   refreshToken: string | null | undefined
 ): Promise<calendar_v3.Calendar> {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const clientId = sanitizeCredential(process.env.GOOGLE_CLIENT_ID);
+  const clientSecret = sanitizeCredential(process.env.GOOGLE_CLIENT_SECRET);
 
   if (!clientId || !clientSecret) {
     throw new GoogleAuthError(
@@ -35,7 +44,9 @@ export async function getGoogleCalendarClientFromRefreshToken(
     );
   }
 
-  if (!refreshToken) {
+  const cleanRefreshToken = sanitizeCredential(refreshToken);
+
+  if (!cleanRefreshToken) {
     throw new GoogleAuthError(
       'No Google refresh token on file. The user must connect their Google Calendar to continue.'
     );
@@ -46,7 +57,21 @@ export async function getGoogleCalendarClientFromRefreshToken(
     clientSecret,
   });
 
-  oauth2Client.setCredentials({ refresh_token: refreshToken });
+  oauth2Client.setCredentials({ refresh_token: cleanRefreshToken });
+
+  // Force the refresh-token exchange now so a bad Client ID/secret or a
+  // revoked token surfaces here with a precise diagnostic (including the
+  // first 8 chars of the Client ID Vercel is actually reading), rather than
+  // as an opaque failure later inside `events.insert`.
+  try {
+    await oauth2Client.getAccessToken();
+  } catch (err) {
+    throw new GoogleAuthError(
+      `Google token refresh failed (client_id starts with "${clientId.slice(0, 8)}", length ${clientId.length}): ${
+        err instanceof Error ? err.message : 'unknown error'
+      }`
+    );
+  }
 
   return google.calendar({ version: 'v3', auth: oauth2Client });
 }
