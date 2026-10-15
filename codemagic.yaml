@@ -73,7 +73,7 @@ workflows:
         script: |
           # Re-apply the RNIap podspec patch right before CocoaPods reads it
           # (prints the final podspec to the log).
-          node ../scripts/patch-rniap-podspec.js
+          node scripts/patch-rniap-podspec.js
           cd ios
           pod install || pod install --repo-update
       - name: Fetch Signing Files
