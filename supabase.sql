@@ -39,6 +39,14 @@ alter table public.users
   add column if not exists apple_original_transaction_id text,
   add column if not exists apple_product_id text;
 
+-- 1e. Phase 2: editable business profile + VA system prompt
+-- (see /api/assistant/settings and the dashboard's #ai-settings panel)
+alter table public.users
+  add column if not exists business_name text,
+  add column if not exists business_industry text,
+  add column if not exists business_address text,
+  add column if not exists vapi_system_prompt text;
+
 -- 2. Performance indexes
 create index if not exists users_email_idx on public.users (email);
 create index if not exists users_created_at_idx on public.users (created_at desc);

@@ -55,5 +55,12 @@ export async function GET(request: Request): Promise<NextResponse> {
     }
   }
 
+  // Plain identity sign-in (login page, `openid email profile` only) returns
+  // no Google refresh token — land on the destination without falsely
+  // reporting a connected calendar.
+  if (!providerRefreshToken && next.startsWith('/dashboard')) {
+    return NextResponse.redirect(`${requestUrl.origin}${next}`);
+  }
+
   return NextResponse.redirect(`${requestUrl.origin}${next}?calendar=connected`);
 }

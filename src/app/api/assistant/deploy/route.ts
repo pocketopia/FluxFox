@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
 import { deployVapiAssistant, VapiApiError } from '@/lib/vapi';
+import { requireActiveSubscription } from '@/lib/subscription';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,6 +18,8 @@ interface DeployRequestBody {
    * prompt built from `industry` + `companyName`.
    */
   systemPrompt?: unknown;
+  /** Optional street address, given to callers who choose an in-person appointment. */
+  businessAddress?: unknown;
 }
 
 interface DeploySuccessResponse {
@@ -63,6 +66,11 @@ export async function POST(request: Request): Promise<NextResponse<DeploySuccess
     return NextResponse.json({ error: 'No authenticated Supabase session was found.' }, { status: 401 });
   }
 
+  // PAYWALL: deploying a live assistant requires an active subscription or
+  // 7-day free trial. (The interactive Test Demo is never gated.)
+  const paywall = await requireActiveSubscription(supabase, user.id);
+  if (paywall) return paywall;
+
   let body: DeployRequestBody;
   try {
     body = (await request.json()) as DeployRequestBody;
@@ -70,7 +78,9 @@ export async function POST(request: Request): Promise<NextResponse<DeploySuccess
     return NextResponse.json({ error: 'Request body must be valid JSON.' }, { status: 400 });
   }
 
-  const { industry, companyName, businessName, systemPrompt } = body;
+  const { industry, companyName, businessName, systemPrompt, businessAddress } = body;
+  const resolvedAddress =
+    typeof businessAddress === 'string' && businessAddress.trim() ? businessAddress.trim().slice(0, 300) : undefined;
 
   if (typeof industry !== 'string' || !industry.trim()) {
     return NextResponse.json(
@@ -98,6 +108,7 @@ export async function POST(request: Request): Promise<NextResponse<DeploySuccess
       industry,
       companyName: resolvedCompanyName,
       systemPrompt: resolvedSystemPrompt,
+      businessAddress: resolvedAddress,
       baseUrl: origin,
     });
   } catch (err) {
@@ -110,7 +121,15 @@ export async function POST(request: Request): Promise<NextResponse<DeploySuccess
 
   const { error: updateError } = await supabase
     .from('users')
-    .update({ vapi_assistant_id: assistant.id })
+    .update({
+      vapi_assistant_id: assistant.id,
+      // Persist the editable business profile so the dashboard's AI Settings
+      // panel (/api/assistant/settings) can show / edit / reset it later.
+      business_name: resolvedCompanyName?.trim() || null,
+      business_industry: industry.trim(),
+      business_address: resolvedAddress ?? null,
+      vapi_system_prompt: resolvedSystemPrompt ?? null,
+    })
     .eq('id', user.id);
 
   if (updateError) {

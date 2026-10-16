@@ -21,6 +21,7 @@
       "bundleIdentifier": "com.fluxfox.app",
       "buildNumber": "1",
       "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
         "NSMicrophoneUsageDescription": "FluxFox needs access to your microphone so you can speak with your AI receptionist during setup and testing.",
         "NSCameraUsageDescription": "FluxFox requires camera access to upload a custom business logo or profile picture.",
         "NSPhotoLibraryUsageDescription": "FluxFox requires photo library access to upload a custom business logo."

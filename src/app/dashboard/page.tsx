@@ -1,7 +1,9 @@
 import { redirect } from 'next/navigation';
 import { createClient } from '@/utils/supabase/server';
 import FluxFoxConsole from '@/components/dashboard/FluxFoxConsole';
-import SubscribeButton from '@/components/dashboard/SubscribeButton';
+import SubscriptionOffer from '@/components/dashboard/SubscriptionOffer';
+import AiSettingsPanel from '@/components/dashboard/AiSettingsPanel';
+import { isSubscriptionActive } from '@/lib/subscription';
 import {
   CalendarCheck2,
   ShieldCheck,
@@ -47,7 +49,7 @@ export default async function DashboardPage() {
     user?.user_metadata?.name ||
     profile?.full_name ||
     user?.email?.split('@')[0] ||
-    'Admin Preview';
+    'Business Owner';
 
   const avatarUrl =
     user?.user_metadata?.avatar_url ||
@@ -89,13 +91,16 @@ export default async function DashboardPage() {
         .eq('assistant_id', vapiAssistantId)
         .order('created_at', { ascending: false })
     : { data: null as CallLogRow[] | null };
-  // NOTE: onboarding (the FluxFoxConsole wizard below) intentionally never
-  // gates on `profile.subscription_status` — App Store review requires the
-  // core product experience to be reachable without a paywall blocking it.
-  // Monetization instead lives in the Billing section's `SubscribeButton`,
-  // which routes to native Apple IAP inside the mobile WebView (see
-  // `mobile/App.tsx` + `/api/apple/verify-receipt`) or Stripe Checkout in a
-  // standard browser (`/api/stripe/checkout`).
+  // Paywall model: the interactive Test Demo (and the setup wizard up to the
+  // final review) is reachable by every signed-in user, including unpaid and
+  // App Review accounts. Anything LIVE — deploying the assistant, claiming /
+  // forwarding a phone number, saving production routing — requires an
+  // active subscription or 7-day free trial, enforced both here (UI) and
+  // server-side (`requireActiveSubscription` in `/api/assistant/deploy` and
+  // `/api/phone/provision`). Purchases route to native Apple IAP inside the
+  // mobile WebView (see `mobile/App.tsx` + `/api/apple/verify-receipt`) or
+  // Stripe Checkout in a standard browser (`/api/stripe/checkout`).
+  const isSubscribed = isSubscriptionActive(profile?.subscription_status as string | null | undefined);
 
   async function handleSignOut() {
     'use server';
@@ -162,7 +167,7 @@ export default async function DashboardPage() {
             <div className="hidden sm:flex items-center gap-3 px-3 py-1.5 rounded-lg bg-zinc-950/80 border border-zinc-800 text-xs text-zinc-400">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
               <span className="text-zinc-300 truncate max-w-[200px]">
-                {user?.email ?? 'Admin preview session'}
+                {user?.email ?? ''}
               </span>
             </div>
 
@@ -274,7 +279,11 @@ export default async function DashboardPage() {
         </section>
 
         {/* Guided Mascot Onboarding — Flux walks the user through activation */}
-        <FluxFoxConsole vapiAssistantId={vapiAssistantId} twilioPhoneNumber={twilioPhoneNumber} />
+        <FluxFoxConsole
+          vapiAssistantId={vapiAssistantId}
+          twilioPhoneNumber={twilioPhoneNumber}
+          isSubscribed={isSubscribed}
+        />
 
         {/* Operational Status Grid */}
         <section className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-10">
@@ -485,6 +494,8 @@ export default async function DashboardPage() {
                 </div>
               </div>
             </div>
+
+            <AiSettingsPanel isDeployed={Boolean(vapiAssistantId)} />
           </div>
         </section>
 
@@ -571,20 +582,24 @@ export default async function DashboardPage() {
               <div>
                 <div className="text-xs text-zinc-400">Current Plan</div>
                 <div className="text-sm text-zinc-200 font-semibold mt-0.5">
-                  {profile?.subscription_status === 'active' ? 'FluxFox Pro' : 'No active plan'}
+                  {isSubscribed ? 'FluxFox Pro' : 'No active plan'}
                 </div>
               </div>
-              {profile?.subscription_status === 'active' ? (
+              {isSubscribed ? (
                 <span className="px-2.5 py-1 text-xs font-medium rounded-md border bg-emerald-500/10 text-emerald-400 border-emerald-500/30 w-fit">
                   Active
                 </span>
               ) : (
-                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                  <SubscribeButton plan="monthly" label="Subscribe — Monthly" />
-                  <SubscribeButton plan="annual" label="Subscribe — Annual (save 20%)" />
-                </div>
+                <span className="px-2.5 py-1 text-xs font-medium rounded-md border bg-amber-500/10 text-amber-400 border-amber-500/30 w-fit">
+                  7-Day Free Trial Available
+                </span>
               )}
             </div>
+            {!isSubscribed && (
+              <div className="mt-4">
+                <SubscriptionOffer />
+              </div>
+            )}
           </div>
         </section>
 

@@ -3,9 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import {
-  Flame,
   Building2,
   Hash,
+  MapPin,
   ChevronDown,
   Loader2,
   CalendarCheck2,
@@ -54,6 +54,7 @@ interface OnboardingDraft {
   businessName: string;
   trade: string;
   areaCode: string;
+  businessAddress: string;
   calendarConnected: boolean;
 }
 
@@ -61,6 +62,7 @@ const EMPTY_DRAFT: OnboardingDraft = {
   businessName: '',
   trade: '',
   areaCode: '',
+  businessAddress: '',
   calendarConnected: false,
 };
 
@@ -75,6 +77,7 @@ function loadDraft(): OnboardingDraft {
       businessName: typeof parsed.businessName === 'string' ? parsed.businessName : '',
       trade: typeof parsed.trade === 'string' ? parsed.trade : '',
       areaCode: typeof parsed.areaCode === 'string' ? parsed.areaCode : '',
+      businessAddress: typeof parsed.businessAddress === 'string' ? parsed.businessAddress : '',
       calendarConnected: parsed.calendarConnected === true,
     };
   } catch {
@@ -144,6 +147,7 @@ export default function OnboardingWizard() {
   const [businessName, setBusinessName] = useState('');
   const [trade, setTrade] = useState('');
   const [areaCode, setAreaCode] = useState('');
+  const [businessAddress, setBusinessAddress] = useState('');
   const [calendarConnected, setCalendarConnected] = useState(false);
 
   const [isConnectingCalendar, setIsConnectingCalendar] = useState(false);
@@ -163,6 +167,7 @@ export default function OnboardingWizard() {
     setBusinessName(draft.businessName);
     setTrade(draft.trade);
     setAreaCode(draft.areaCode);
+    setBusinessAddress(draft.businessAddress);
 
     const calendarResult = searchParams.get('calendar');
 
@@ -186,6 +191,7 @@ export default function OnboardingWizard() {
       businessName,
       trade,
       areaCode,
+      businessAddress,
       calendarConnected,
       ...partial,
     };
@@ -242,9 +248,19 @@ export default function OnboardingWizard() {
       const deployRes = await fetch('/api/assistant/deploy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ industry: trade, businessName: businessName.trim() }),
+        body: JSON.stringify({
+          industry: trade,
+          businessName: businessName.trim(),
+          businessAddress: businessAddress.trim() || undefined,
+        }),
       });
       const deployData = (await deployRes.json().catch(() => null)) as { error?: string } | null;
+
+      if (deployRes.status === 402) {
+        // Paywall: the demo is free, going live needs the 7-day trial / subscription.
+        router.push('/dashboard#billing');
+        return;
+      }
 
       if (!deployRes.ok) {
         throw new Error(deployData?.error || 'Failed to deploy your AI receptionist. Please try again.');
@@ -308,13 +324,17 @@ export default function OnboardingWizard() {
       <div className="relative w-full max-w-lg z-10">
         {/* Brand */}
         <div className="flex flex-col items-center mb-8">
-          <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-amber-500 to-orange-600 flex items-center justify-center p-0.5 shadow-lg shadow-amber-500/20 ring-1 ring-amber-400/40 mb-4">
-            <div className="w-full h-full bg-zinc-950 rounded-[10px] flex items-center justify-center">
-              <Flame className="w-6 h-6 text-amber-400" />
-            </div>
-          </div>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            id="onboarding-logo"
+            src="/logo.png"
+            alt="FluxFox"
+            width={48}
+            height={48}
+            className="w-12 h-12 rounded-xl object-contain shadow-lg shadow-amber-500/25 mb-4"
+          />
           <h1 className="text-xl font-bold text-white tracking-tight">Let&rsquo;s get you live</h1>
-          <p className="mt-1 text-sm text-zinc-500">Three quick steps. No credit card, no paperwork.</p>
+          <p className="mt-1 text-sm text-zinc-500">Three quick steps. Hear the demo free, then start your 7-day trial.</p>
         </div>
 
         {/* Step Progress */}
@@ -408,6 +428,33 @@ export default function OnboardingWizard() {
                     </select>
                     <ChevronDown className="absolute right-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500 pointer-events-none" />
                   </div>
+                </div>
+
+                <div>
+                  <label
+                    htmlFor="business-address"
+                    className="block text-xs font-semibold text-zinc-400 mb-1.5 tracking-wide"
+                  >
+                    Business Address <span className="text-zinc-600 font-normal">(optional)</span>
+                  </label>
+                  <div className="relative">
+                    <MapPin className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-zinc-500" />
+                    <input
+                      id="business-address"
+                      name="businessAddress"
+                      type="text"
+                      autoComplete="street-address"
+                      maxLength={300}
+                      value={businessAddress}
+                      onChange={(e) => setBusinessAddress(e.target.value)}
+                      placeholder="123 Main St, Springfield, IL 62701"
+                      className="w-full min-h-[44px] bg-zinc-950/70 border border-zinc-800 rounded-lg py-3 pl-10 pr-4 text-sm text-zinc-100 placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50 transition-all"
+                    />
+                  </div>
+                  <p className="mt-1.5 text-[11px] text-zinc-600">
+                    Used when callers choose an in-person appointment; leave blank if you only do callbacks or on-site
+                    visits at the customer&rsquo;s address.
+                  </p>
                 </div>
 
                 <div>
@@ -582,7 +629,7 @@ export default function OnboardingWizard() {
         </div>
 
         <p className="mt-6 text-center text-[11px] text-zinc-500">
-          FluxFox &bull; Free sandbox &bull; No credit card required
+          FluxFox &bull; Demo is free &bull; 7-day free trial to go live
         </p>
       </div>
     </main>

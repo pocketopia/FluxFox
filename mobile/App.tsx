@@ -6,6 +6,7 @@ import WebView, { type WebViewMessageEvent } from 'react-native-webview';
 import {
   endConnection,
   finishTransaction,
+  getSubscriptions,
   initConnection,
   purchaseErrorListener,
   purchaseUpdatedListener,
@@ -79,6 +80,33 @@ function isPurchaseBridgeMessage(value: unknown): value is PurchaseBridgeMessage
   );
 }
 
+/** Retries an async StoreKit call with a short linear backoff. StoreKit
+ * product requests can transiently return an empty list right after
+ * `initConnection()`, which surfaces as "in-app purchase products were not
+ * available" if we call `requestSubscription` too early. */
+async function withRetry<T>(
+  label: string,
+  task: () => Promise<T>,
+  isUsable: (result: T) => boolean = () => true,
+  attempts = 3,
+  delayMs = 800
+): Promise<T> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const result = await task();
+      if (isUsable(result)) return result;
+      lastError = new Error(`${label} returned no products (attempt ${attempt}/${attempts}).`);
+    } catch (err) {
+      lastError = err;
+    }
+    if (attempt < attempts) {
+      await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`${label} failed.`);
+}
+
 /** Posts a JSON-serializable result back down into the web app's own
  * `window.postMessage` listener so the page can react (e.g. show a success
  * toast or refresh the dashboard) once the native purchase settles. */
@@ -103,11 +131,27 @@ export default function App() {
   // mount, and tear it down on unmount. Required by react-native-iap before
   // any purchase can be requested.
   useEffect(() => {
-    initConnection().catch((err) => {
-      console.error('[FluxFox IAP] Failed to initialize the store connection:', err);
-    });
+    let cancelled = false;
+
+    (async () => {
+      try {
+        await initConnection();
+        // Pre-fetch every subscription SKU (monthly + annual) so StoreKit has
+        // the products cached before the user ever taps "Start Free Trial".
+        await withRetry(
+          'getSubscriptions',
+          () => getSubscriptions({ skus: Object.values(APPLE_SUBSCRIPTION_SKUS) }),
+          (products) => Array.isArray(products) && products.length > 0
+        );
+      } catch (err) {
+        if (!cancelled) {
+          console.error('[FluxFox IAP] Failed to initialize the store connection / pre-fetch products:', err);
+        }
+      }
+    })();
 
     return () => {
+      cancelled = true;
       endConnection();
     };
   }, []);
@@ -190,12 +234,24 @@ export default function App() {
     const sku = APPLE_SUBSCRIPTION_SKUS[parsed.plan];
     pendingPlanRef.current = { plan: parsed.plan, supabaseAccessToken: parsed.supabaseAccessToken };
 
-    requestSubscription({ sku }).catch((err) => {
-      pendingPlanRef.current = null;
-      const message = err instanceof Error ? err.message : 'Failed to start the Apple purchase flow.';
-      postResultToWebView(webViewRef, { type: 'PURCHASE_RESULT', success: false, error: message });
-      Alert.alert('Purchase Failed', message);
-    });
+    (async () => {
+      try {
+        // Always (re)load this SKU's StoreKit product immediately before
+        // purchasing so `requestSubscription` never throws "in-app purchase
+        // products were not available".
+        await withRetry(
+          'getSubscriptions',
+          () => getSubscriptions({ skus: [sku] }),
+          (products) => Array.isArray(products) && products.length > 0
+        );
+        await requestSubscription({ sku });
+      } catch (err) {
+        pendingPlanRef.current = null;
+        const message = err instanceof Error ? err.message : 'Failed to start the Apple purchase flow.';
+        postResultToWebView(webViewRef, { type: 'PURCHASE_RESULT', success: false, error: message });
+        Alert.alert('Purchase Failed', message);
+      }
+    })();
   }, []);
 
   void verifyingReceipt; // reserved for a future native loading overlay

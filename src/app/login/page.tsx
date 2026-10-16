@@ -29,13 +29,51 @@ function GoogleGlyph() {
   );
 }
 
+/** Apple's official logo mark, in white, for the "Continue with Apple" button. */
+function AppleGlyph() {
+  return (
+    <svg viewBox="0 0 24 24" className="w-5 h-5 shrink-0" fill="currentColor" aria-hidden="true">
+      <path d="M16.365 1.43c0 1.14-.42 2.2-1.25 3.06-.9.93-1.98 1.47-3.15 1.38-.03-1.1.44-2.2 1.24-3.03.9-.93 2.04-1.48 3.16-1.41zM20.5 17.1c-.55 1.27-.82 1.84-1.52 2.96-.99 1.57-2.38 3.52-4.1 3.54-1.53.02-1.93-1-4.01-.99-2.08.01-2.52 1.01-4.05.99-1.72-.02-3.04-1.78-4.03-3.35C-.1 15.9-.4 10.7 1.4 7.97c1.27-1.93 3.28-3.06 5.17-3.06 1.92 0 3.12 1.05 4.7 1.05 1.53 0 2.46-1.05 4.67-1.05 1.68 0 3.46.92 4.73 2.5-4.16 2.28-3.49 8.22.83 9.69z" />
+    </svg>
+  );
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+  const [isAppleLoading, setIsAppleLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  /**
+   * Sign in with Apple (App Store Guideline 4.8), via Supabase's Apple OAuth
+   * provider with the same PKCE `/auth/callback` redirect as Google. Requires
+   * the Apple provider to be enabled in Supabase Auth (Services ID + key).
+   */
+  async function handleAppleSignIn() {
+    setError(null);
+    setIsAppleLoading(true);
+
+    try {
+      const supabase = createClient();
+      const { error: oauthError } = await supabase.auth.signInWithOAuth({
+        provider: 'apple',
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback?next=/dashboard`,
+        },
+      });
+
+      if (oauthError) {
+        setError(oauthError.message);
+        setIsAppleLoading(false);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start Apple sign-in.');
+      setIsAppleLoading(false);
+    }
+  }
 
   /**
    * Real Supabase email/password sign-in (`@supabase/ssr`'s browser client,
@@ -44,7 +82,9 @@ export default function LoginPage() {
    * to `/dashboard`'s server-side `supabase.auth.getUser()` guard. Requires
    * a user already provisioned in Supabase Auth (e.g. via the Google OAuth
    * flow below, or invited from the Supabase dashboard) — there is no
-   * self-serve email/password sign-up screen in this app.
+   * self-serve email/password sign-up screen in this app. The Apple App
+   * Review tester account is created/reset with `npm run seed:reviewer`
+   * (see `scripts/seed-apple-reviewer.mjs`).
    */
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -73,13 +113,12 @@ export default function LoginPage() {
   };
 
   /**
-   * Real Google OAuth sign-in, identical pattern to
-   * `OnboardingWizard.tsx`'s "Continue with Google" button: requests the
-   * Calendar Events scope with an offline refresh token so
-   * `/auth/callback` can persist it to `public.users.google_refresh_token`.
+   * Real Google OAuth sign-in (Supabase PKCE redirect flow). Requests only
+   * `openid email profile` so no unverified-app warning is shown.
    * Lands returning users straight on `/dashboard`, where `FluxFoxConsole`
-   * picks up onboarding (deploy assistant / claim number) if not already
-   * complete.
+   * picks up onboarding (demo / deploy / claim number) if not already
+   * complete. The Google Calendar scope is requested later, opt-in, by the
+   * onboarding Calendar step.
    */
   async function handleGoogleSignIn() {
     setError(null);
@@ -91,11 +130,11 @@ export default function LoginPage() {
         provider: 'google',
         options: {
           redirectTo: `${window.location.origin}/auth/callback?next=/dashboard`,
-          scopes: 'https://www.googleapis.com/auth/calendar.events',
-          queryParams: {
-            access_type: 'offline',
-            prompt: 'consent',
-          },
+          // Basic verified identity scopes ONLY — no sensitive/restricted
+          // scopes, so Google never shows the "unverified app" warning on
+          // sign-in. Calendar access is requested separately (and only when
+          // the user opts in) from the onboarding Calendar step.
+          scopes: 'openid email profile',
         },
       });
 
@@ -151,9 +190,15 @@ export default function LoginPage() {
 
           {/* Logo & Brand Identity */}
           <div className="flex flex-col items-center mb-8">
-            <div className="w-12 h-12 rounded-lg bg-gradient-to-br from-amber-500 to-orange-500 flex items-center justify-center shadow-lg shadow-amber-500/25 mb-4">
-              <span className="text-zinc-950 font-black text-xl">F</span>
-            </div>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              id="login-logo"
+              src="/logo.png"
+              alt="FluxFox"
+              width={64}
+              height={64}
+              className="w-16 h-16 rounded-xl object-contain shadow-lg shadow-amber-500/25 mb-4"
+            />
             <h1 className="text-xl font-bold text-white tracking-tight">Welcome back</h1>
             <p className="mt-1 text-sm text-zinc-500">Sign in to your FluxFox account</p>
           </div>
@@ -224,7 +269,7 @@ export default function LoginPage() {
             <button
               id="login-submit-button"
               type="submit"
-              disabled={isLoading || isGoogleLoading}
+              disabled={isLoading || isGoogleLoading || isAppleLoading}
               className="w-full relative group overflow-hidden bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 font-semibold py-3.5 px-6 rounded-lg transition-all duration-200 shadow-lg shadow-amber-500/25 active:scale-[0.99] disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center gap-2 cursor-pointer mt-2"
             >
               <span className="font-bold tracking-tight text-sm sm:text-base">
@@ -244,11 +289,26 @@ export default function LoginPage() {
           {/* Google OAuth — the same real Supabase flow used by the onboarding
               wizard's "Continue with Google" button (OnboardingWizard.tsx),
               so a returning user can sign in and land straight on /dashboard. */}
+          {/* Sign in with Apple — required by App Store Guideline 4.8 whenever a
+              third-party login (Google) is offered. Listed ABOVE Google. */}
+          <button
+            id="login-apple-button"
+            type="button"
+            onClick={handleAppleSignIn}
+            disabled={isLoading || isGoogleLoading || isAppleLoading}
+            className="w-full flex items-center justify-center gap-3 bg-black hover:bg-zinc-900 border border-zinc-700 text-white font-semibold py-3.5 px-6 rounded-lg transition-all duration-200 active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer mb-3"
+          >
+            {isAppleLoading ? <Loader2 className="w-5 h-5 animate-spin" /> : <AppleGlyph />}
+            <span className="text-sm sm:text-base">
+              {isAppleLoading ? 'Redirecting to Apple...' : 'Continue with Apple'}
+            </span>
+          </button>
+
           <button
             id="login-google-button"
             type="button"
             onClick={handleGoogleSignIn}
-            disabled={isLoading || isGoogleLoading}
+            disabled={isLoading || isGoogleLoading || isAppleLoading}
             className="w-full flex items-center justify-center gap-3 bg-white hover:bg-zinc-100 text-zinc-900 font-semibold py-3.5 px-6 rounded-lg transition-all duration-200 active:scale-[0.99] disabled:opacity-60 disabled:cursor-not-allowed cursor-pointer"
           >
             {isGoogleLoading ? (

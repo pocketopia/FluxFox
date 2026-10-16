@@ -7,6 +7,7 @@ export const dynamic = 'force-dynamic';
 interface SuggestPromptRequestBody {
   industry?: unknown;
   companyName?: unknown;
+  businessAddress?: unknown;
 }
 
 interface SuggestPromptSuccessResponse {
@@ -79,7 +80,8 @@ export async function POST(
   }
 
   try {
-    const systemPrompt = generateSuggestedPrompt(industry, companyName);
+    const address = typeof body.businessAddress === 'string' ? body.businessAddress.trim().slice(0, 300) : '';
+    const systemPrompt = generateSuggestedPrompt(industry, companyName, address || undefined);
     return NextResponse.json({ systemPrompt }, { status: 200 });
   } catch (err) {
     if (err instanceof VapiApiError) {

@@ -28,13 +28,23 @@ import {
   PencilLine,
   ThumbsUp,
   CircleAlert,
+  Lock,
+  MapPin,
 } from 'lucide-react';
+import DemoAudioPlayer from '@/components/onboarding/DemoAudioPlayer';
 
 export interface FluxFoxConsoleProps {
   /** The user's live `vapi_assistant_id` from public.users, or null if not yet deployed. */
   vapiAssistantId: string | null;
   /** The user's live `twilio_phone_number` from public.users, or null if not yet provisioned. */
   twilioPhoneNumber: string | null;
+  /**
+   * True when `public.users.subscription_status` is an active subscription or
+   * 7-day free trial. Unpaid users can still hear the interactive Test Demo
+   * but cannot deploy an assistant or claim a live number (also enforced
+   * server-side with HTTP 402 by `requireActiveSubscription`).
+   */
+  isSubscribed: boolean;
 }
 
 interface IndustryOption {
@@ -43,7 +53,7 @@ interface IndustryOption {
   icon: typeof Wrench;
 }
 
-const INDUSTRY_OPTIONS: IndustryOption[] = [
+export const INDUSTRY_OPTIONS: IndustryOption[] = [
   { value: 'plumber', label: 'Plumbing', icon: Wrench },
   { value: 'roofer', label: 'Roofing', icon: Home },
   { value: 'electrician', label: 'Electrical', icon: Zap },
@@ -96,10 +106,11 @@ function FluxBubble({ children }: { children: React.ReactNode }) {
  *   1. `vapiAssistantId`, no phone number → claim a business line
  *   2. Both present                        → fully active, test-call ready
  *
- * STRATEGIC PIVOT (App Store IAP compliance): this wizard never gates on
- * `subscription_status` — onboarding always starts at step 0 for every
- * signed-in user, so the core product experience is reachable without a
- * paywall. Monetization instead lives in the dashboard's Billing section
+ * PAYWALL MODEL: the wizard (and the free interactive Test Demo) is open to
+ * every signed-in user, but the LIVE actions — "Deploy AI" and "Claim
+ * Number" — require `isSubscribed` (active subscription or 7-day free trial)
+ * and are also enforced server-side with HTTP 402. Purchases live in the
+ * dashboard's Billing section
  * (`SubscribeButton`, see `src/app/dashboard/page.tsx`), which triggers
  * native Apple IAP inside the mobile WebView (`mobile/App.tsx` +
  * `/api/apple/verify-receipt`) or Stripe Checkout in a standard browser.
@@ -134,7 +145,45 @@ type SetupPhase = 'industry' | 'company' | 'choice' | 'auto-review' | 'manual-wr
  */
 type PhoneNumberPath = 'choice' | 'new' | 'existing';
 
-export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: FluxFoxConsoleProps) {
+/**
+ * Paywall gate shown in place of every LIVE action (Deploy AI / Claim Number)
+ * for unpaid users. Always paired with the free interactive Test Demo so
+ * App Review and new users can experience FluxFox before paying.
+ */
+function LiveFeaturesGate({ action }: { action: string }) {
+  return (
+    <div
+      id="live-paywall-gate"
+      className="p-4 rounded-lg bg-amber-500/5 border border-amber-500/30 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+    >
+      <div className="flex items-start gap-3">
+        <Lock className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+        <p className="text-xs text-zinc-300">
+          Start your <span className="font-semibold text-white">7-day free trial</span> (Monthly or Annual) to {action}.
+          Nothing goes live for your business until your trial or subscription is active.
+        </p>
+      </div>
+      <a
+        id="live-paywall-cta"
+        href="#billing"
+        className="min-h-[44px] flex items-center justify-center bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 font-semibold px-5 py-2.5 rounded-lg shadow-lg shadow-amber-500/25 transition-all text-sm whitespace-nowrap"
+      >
+        Start Free Trial
+      </a>
+    </div>
+  );
+}
+
+/** Free interactive Test Demo — always available, never behind the paywall. */
+function TestDemoCard() {
+  return (
+    <div id="test-demo-card" className="p-4 rounded-lg bg-zinc-950/70 border border-zinc-800">
+      <DemoAudioPlayer src="/audio/flux-demo-call.m4a" label="Test Demo — hear FluxFox answer a call" />
+    </div>
+  );
+}
+
+export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber, isSubscribed }: FluxFoxConsoleProps) {
   const router = useRouter();
 
   const [selectedIndustry, setSelectedIndustry] = useState<string | null>(null);
@@ -149,6 +198,7 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
   // --- Assistant creation wizard state (Company Name step + two-path prompt setup) ---
   const [setupPhase, setSetupPhase] = useState<SetupPhase>('industry');
   const [companyName, setCompanyName] = useState('');
+  const [businessAddress, setBusinessAddress] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('');
   const [isGeneratingPrompt, setIsGeneratingPrompt] = useState(false);
   const [isEditingPrompt, setIsEditingPrompt] = useState(false);
@@ -177,7 +227,11 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
       const res = await fetch('/api/assistant/suggest-prompt', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ industry: selectedIndustry, companyName: companyName.trim() }),
+        body: JSON.stringify({
+          industry: selectedIndustry,
+          companyName: companyName.trim(),
+          businessAddress: businessAddress.trim() || undefined,
+        }),
       });
 
       const data = (await res.json().catch(() => null)) as { systemPrompt?: string; error?: string } | null;
@@ -229,6 +283,10 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
 
   async function handleDeployAssistant() {
     if (!selectedIndustry || isDeploying) return;
+    if (!isSubscribed) {
+      setErrorMessage('Start your 7-day free trial in the Billing section to deploy your AI receptionist.');
+      return;
+    }
     setErrorMessage(null);
     setIsDeploying(true);
 
@@ -239,6 +297,7 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
         body: JSON.stringify({
           industry: selectedIndustry,
           companyName: companyName.trim(),
+          businessAddress: businessAddress.trim() || undefined,
           systemPrompt: systemPrompt.trim() || undefined,
         }),
       });
@@ -259,6 +318,11 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
 
   async function handleClaimNumber() {
     if (isProvisioning) return;
+
+    if (!isSubscribed) {
+      setErrorMessage('Start your 7-day free trial in the Billing section to claim a live business number.');
+      return;
+    }
 
     if (!/^\d{3}$/.test(areaCode.trim())) {
       setErrorMessage('Enter a valid 3-digit area code (e.g. 415).');
@@ -365,7 +429,16 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
           </FluxBubble>
         )}
 
-        {step === 2 && twilioPhoneNumber && (
+        {step === 2 && twilioPhoneNumber && !isSubscribed && (
+          <FluxBubble>
+            <p className="font-semibold text-white mb-1">Your AI receptionist is ready to activate. 🔒</p>
+            <p>
+              Hear the free Test Demo below, then start your 7-day free trial to switch on your live business line.
+            </p>
+          </FluxBubble>
+        )}
+
+        {step === 2 && twilioPhoneNumber && isSubscribed && (
           <FluxBubble>
             <p className="font-semibold text-white mb-1 flex items-center gap-1.5">
               You did it! Your AI receptionist is live! <PartyPopper className="w-4 h-4 text-amber-400" />
@@ -377,6 +450,18 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
           </FluxBubble>
         )}
       </div>
+
+      {/*
+        Free interactive Test Demo — pinned at the top of the console in EVERY
+        state (industry / company / choice / review / phone step / step 2)
+        while the account is unpaid, so a new user or App Reviewer can hear it
+        immediately after signing in.
+      */}
+      {!isSubscribed && (
+        <div className="mt-5 ml-0 sm:ml-[60px]">
+          <TestDemoCard />
+        </div>
+      )}
 
       {errorMessage && (
         <div
@@ -442,18 +527,39 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
                 className="w-full min-h-[44px] bg-zinc-950/70 border border-zinc-800 rounded-lg pl-10 pr-4 py-3 text-sm text-white placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50"
               />
             </div>
-
-            <button
-              id="company-name-continue-button"
-              type="button"
-              onClick={handleCompanyContinue}
-              disabled={!companyName.trim()}
-              className="min-h-[44px] flex items-center justify-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 font-semibold px-6 py-3 rounded-lg shadow-lg shadow-amber-500/25 transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-            >
-              <ArrowRight className="w-4 h-4" />
-              Continue
-            </button>
           </div>
+
+          <label htmlFor="business-address-input" className="block text-xs font-medium text-zinc-400 mt-4 mb-2">
+            Business street address <span className="text-zinc-600 font-normal">(optional)</span>
+          </label>
+          <div className="relative">
+            <MapPin className="w-4 h-4 text-zinc-600 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              id="business-address-input"
+              type="text"
+              autoComplete="street-address"
+              maxLength={300}
+              placeholder="123 Main St, Springfield, IL 62701"
+              value={businessAddress}
+              onChange={(e) => setBusinessAddress(e.target.value)}
+              className="w-full min-h-[44px] bg-zinc-950/70 border border-zinc-800 rounded-lg pl-10 pr-4 py-3 text-sm text-white placeholder:text-zinc-600 focus:outline-none focus:ring-2 focus:ring-amber-500/50 focus:border-amber-500/50"
+            />
+          </div>
+          <p className="mt-1.5 text-[11px] text-zinc-500">
+            Used when callers choose an in-person appointment; leave blank if you only do callbacks or on-site visits at
+            the customer&rsquo;s address.
+          </p>
+
+          <button
+            id="company-name-continue-button"
+            type="button"
+            onClick={handleCompanyContinue}
+            disabled={!companyName.trim()}
+            className="mt-4 w-full sm:w-auto min-h-[44px] flex items-center justify-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 font-semibold px-6 py-3 rounded-lg shadow-lg shadow-amber-500/25 transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+          >
+            <ArrowRight className="w-4 h-4" />
+            Continue
+          </button>
 
           <button
             id="company-name-back-button"
@@ -640,11 +746,15 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
             </p>
           </div>
 
+          {isSubscribed && <TestDemoCard />}
+
+          {!isSubscribed && <LiveFeaturesGate action="deploy your live AI receptionist" />}
+
           <button
             id="deploy-ai-button"
             type="button"
             onClick={handleDeployAssistant}
-            disabled={isDeploying}
+            disabled={isDeploying || !isSubscribed}
             className="w-full sm:w-auto min-h-[44px] flex items-center justify-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 font-semibold px-6 py-3 rounded-lg shadow-lg shadow-amber-500/25 transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
           >
             {isDeploying ? (
@@ -744,6 +854,7 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
 
       {step === 1 && (phoneNumberPath === 'new' || phoneNumberPath === 'existing') && (
         <div className="mt-5 ml-0 sm:ml-[60px] space-y-3">
+          {!isSubscribed && <LiveFeaturesGate action="claim your live business number" />}
           <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 scroll-mt-24">
             <input
               id="area-code-input"
@@ -761,7 +872,7 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
               id="claim-number-button"
               type="button"
               onClick={handleClaimNumber}
-              disabled={areaCode.length !== 3 || isProvisioning}
+              disabled={areaCode.length !== 3 || isProvisioning || !isSubscribed}
               className="min-h-[44px] flex items-center justify-center gap-2 bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-400 hover:to-orange-400 text-zinc-950 font-semibold px-6 py-3 rounded-lg shadow-lg shadow-amber-500/25 transition-all active:scale-[0.99] disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
             >
               {isProvisioning ? (
@@ -794,7 +905,14 @@ export default function FluxFoxConsole({ vapiAssistantId, twilioPhoneNumber }: F
         </div>
       )}
 
-      {step === 2 && twilioPhoneNumber && (
+      {/* Strict unpaid lock: a provisioned account stays inert until trial/subscription is active. */}
+      {step === 2 && twilioPhoneNumber && !isSubscribed && (
+        <div className="mt-5 ml-0 sm:ml-[60px] space-y-3">
+          <LiveFeaturesGate action="activate your live business line and AI receptionist" />
+        </div>
+      )}
+
+      {step === 2 && twilioPhoneNumber && isSubscribed && (
         <div className="mt-5 ml-0 sm:ml-[60px] space-y-4">
           {/*
             HUGE, undeniably clear display of the live number — this is the

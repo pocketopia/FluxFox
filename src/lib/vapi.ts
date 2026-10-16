@@ -106,6 +106,8 @@ export interface DeployAssistantParams {
    * "Write it myself" path).
    */
   systemPrompt?: string;
+  /** Optional street address the assistant gives callers who choose an in-person appointment. */
+  businessAddress?: string;
   /**
    * Public origin of this deployment (e.g. `new URL(request.url).origin`).
    * Takes priority over env vars when building Vapi's webhook `serverUrl`.
@@ -156,11 +158,17 @@ function resolveIndustryLabel(industry: string): string {
  * exactly what the onboarding wizard's "auto-generate" path (Path A) calls
  * via `generateSuggestedPrompt` below to produce its live preview.
  */
-function buildSystemPrompt(industryLabel: string, companyName?: string): string {
+function buildSystemPrompt(industryLabel: string, companyName?: string, businessAddress?: string): string {
   const trimmedCompanyName = companyName?.trim();
+  const trimmedAddress = businessAddress?.trim();
   const businessPhrase = trimmedCompanyName
     ? `${trimmedCompanyName}, a professional ${industryLabel} business`
     : `a professional ${industryLabel} business`;
+
+  // Optional: only rendered when the owner supplied a street address.
+  const addressBlock = trimmedAddress
+    ? `\n\nBUSINESS ADDRESS\nThe business is located at: ${trimmedAddress}`
+    : '';
 
   return `You are the AI phone receptionist for ${businessPhrase}. You handle inbound calls to schedule, reschedule, and confirm service appointments on the business owner's behalf.
 
@@ -176,7 +184,7 @@ CONVERSATION FLOW
 3. Collect all five required booking details: customer_name, customer_phone, customer_email, project_type, and a confirmed appointment date_time.
 4. Read every detail back to the caller and get explicit verbal confirmation before booking anything.
 5. Only call the book_appointment function after the caller has confirmed every detail out loud.
-6. If any required detail is missing, unclear, or unconfirmed, ask a direct clarifying question. Never invent, guess, or assume a value on the caller's behalf.
+6. If any required detail is missing, unclear, or unconfirmed, ask a direct clarifying question. Never invent, guess, or assume a value on the caller's behalf.${addressBlock}
 
 RULES
 - Never fabricate availability, pricing, technician names, or business details you were not explicitly given.
@@ -193,12 +201,98 @@ RULES
  * "Edit" step shows the caller the real, final prompt rather than a
  * separate, divergent preview string.
  */
-export function generateSuggestedPrompt(industry: string, companyName: string): string {
+export function generateSuggestedPrompt(industry: string, companyName: string, businessAddress?: string): string {
   const trimmedIndustry = industry.trim();
   if (!trimmedIndustry) {
     throw new VapiApiError('An `industry` value (e.g. "plumber", "roofer") is required to generate a prompt.');
   }
-  return buildSystemPrompt(resolveIndustryLabel(trimmedIndustry), companyName);
+  return buildSystemPrompt(resolveIndustryLabel(trimmedIndustry), companyName, businessAddress);
+}
+
+/** Marks the universal appointment-rules block so it can be replaced idempotently (always sits before the timezone block). */
+const BOOKING_RULES_BLOCK_START = '\n\nAPPOINTMENT RULES (FLUXFOX — ALWAYS APPLY)\n';
+
+/** Builds the universal booking rules every FluxFox assistant enforces, regardless of the prompt's author. */
+function buildBookingRulesBlock(businessAddress?: string): string {
+  const address = businessAddress?.trim();
+
+  const inPersonRule = address
+    ? `- IN-PERSON: this business's address is ${address}. Tell the caller this address and ask whether they will come to that location or need an on-site visit at their own address. Collect and confirm the final location, and pass it as appointment_address (the business address if they come to us, otherwise their own street address).`
+    : `- IN-PERSON: no business address is on file. Ask the caller for the street address where the in-person appointment will take place, read it back to confirm it, and pass it as appointment_address before calling book_appointment.`;
+
+  return (
+    `${BOOKING_RULES_BLOCK_START}` +
+    `1. APPOINTMENT TYPE: Before booking, ALWAYS ask every caller whether they want an In-Person Appointment or a Phone Callback Appointment. Pass their answer to book_appointment as appointment_type: "in_person" or "callback". Never assume it.\n` +
+    `2. ADDRESS HANDLING:\n` +
+    `${inPersonRule}\n` +
+    `- CALLBACK: no address is needed; confirm the best phone number to call (customer_phone) and omit appointment_address.\n` +
+    `3. SLOT CONFLICTS: If book_appointment says the requested time is already booked, politely tell the caller that time is unavailable, read out the alternative open times the tool returned, and ask which one works best. Then call book_appointment again with the time they pick. Never claim an appointment is booked unless the tool confirms it.`
+  );
+}
+
+/**
+ * Enforces the universal booking rules on ANY system prompt (auto-generated
+ * or fully custom). Any previous rules block is replaced, and a trailing
+ * timezone block (see `appendTimezoneInstructions`) is kept after it.
+ */
+function withBookingRules(prompt: string, businessAddress?: string): string {
+  const timezoneIndex = prompt.indexOf(TIMEZONE_BLOCK_START);
+  const tail = timezoneIndex === -1 ? '' : prompt.slice(timezoneIndex);
+  let head = timezoneIndex === -1 ? prompt : prompt.slice(0, timezoneIndex);
+
+  const rulesIndex = head.indexOf(BOOKING_RULES_BLOCK_START);
+  if (rulesIndex !== -1) head = head.slice(0, rulesIndex);
+
+  return `${head}${buildBookingRulesBlock(businessAddress)}${tail}`;
+}
+
+/** Reads the business address back out of an existing prompt (written by `buildSystemPrompt` / the rules block). */
+function extractBusinessAddress(prompt: string): string | undefined {
+  const match = prompt.match(/BUSINESS ADDRESS\nThe business is located at: (.+)/);
+  return match?.[1]?.trim() || undefined;
+}
+
+/**
+ * Phase 3 booking-tool fields shared by `buildBookAppointmentTool` (new
+ * assistants) and `upgradeBookAppointmentTool` (assistants deployed before
+ * these fields existed).
+ */
+const APPOINTMENT_TOOL_PROPERTIES = {
+  appointment_type: {
+    type: 'string',
+    enum: ['in_person', 'callback'],
+    description:
+      'Whether the caller wants an in-person appointment ("in_person") or a phone callback appointment ("callback"). Always ask the caller; never assume.',
+  },
+  appointment_address: {
+    type: 'string',
+    description:
+      'Street address where an in-person appointment takes place (the business address, or the customer address for an on-site visit), confirmed by the caller. Required when appointment_type is "in_person" and no default business address applies; omit for callbacks.',
+  },
+};
+
+/** Adds `appointment_type` / `appointment_address` to an existing `book_appointment` tool; other tools are untouched. */
+function upgradeBookAppointmentTool(tool: Record<string, unknown>): Record<string, unknown> {
+  const fn = tool.function as
+    | { name?: string; parameters?: { properties?: Record<string, unknown>; required?: string[] } }
+    | undefined;
+  if (fn?.name !== 'book_appointment') return tool;
+
+  const parameters = fn.parameters ?? {};
+  const required = Array.from(new Set([...(parameters.required ?? []), 'appointment_type']));
+
+  return {
+    ...tool,
+    function: {
+      ...fn,
+      parameters: {
+        ...parameters,
+        type: 'object',
+        properties: { ...(parameters.properties ?? {}), ...APPOINTMENT_TOOL_PROPERTIES },
+        required,
+      },
+    },
+  };
 }
 
 /**
@@ -218,7 +312,8 @@ function buildBookAppointmentTool(industryLabel: string, baseUrl?: string) {
       name: 'book_appointment',
       description:
         `Books a confirmed ${industryLabel} service appointment on the business calendar. ` +
-        'Call this only after the caller has verbally confirmed every field below.',
+        'Call this only after the caller has verbally confirmed every field below. ' +
+        'If the result says the requested time is already booked, offer the alternative times it lists and call this again with the caller\'s choice.',
       parameters: {
         type: 'object',
         properties: {
@@ -243,8 +338,16 @@ function buildBookAppointmentTool(industryLabel: string, baseUrl?: string) {
             description:
               'The confirmed appointment date and time as a strict ISO-8601 timestamp with a UTC offset or "Z" suffix, e.g. 2026-03-14T15:30:00Z.',
           },
+          ...APPOINTMENT_TOOL_PROPERTIES,
         },
-        required: ['customer_name', 'customer_phone', 'customer_email', 'project_type', 'date_time'],
+        required: [
+          'customer_name',
+          'customer_phone',
+          'customer_email',
+          'project_type',
+          'date_time',
+          'appointment_type',
+        ],
       },
     },
   };
@@ -261,6 +364,7 @@ export async function deployVapiAssistant({
   industry,
   companyName,
   systemPrompt,
+  businessAddress,
   baseUrl,
 }: DeployAssistantParams): Promise<VapiAssistant> {
   const apiKey = process.env.VAPI_PRIVATE_API_KEY;
@@ -281,7 +385,11 @@ export async function deployVapiAssistant({
   // A caller-supplied `systemPrompt` (Path A "I like it!"/"Edit", or Path B
   // "write it myself" in the creation wizard) is always used verbatim; only
   // when none is supplied do we fall back to the auto-generated prompt.
-  const resolvedSystemPrompt = trimmedSystemPrompt || buildSystemPrompt(industryLabel, trimmedCompanyName);
+  // The universal appointment rules are ALWAYS enforced, even for a custom prompt.
+  const resolvedSystemPrompt = withBookingRules(
+    trimmedSystemPrompt || buildSystemPrompt(industryLabel, trimmedCompanyName, businessAddress),
+    businessAddress
+  );
 
   // Vapi rejects assistant names longer than 40 characters (HTTP 400). A long
   // `trimmedCompanyName` can easily push `${name} — FluxFox Receptionist` past
@@ -452,8 +560,14 @@ export async function updateAssistantTimezone(
     );
   }
 
+  // Assistants deployed before Phase 3 get the universal booking rules too
+  // (the address, if any, is recovered from the existing prompt).
+  const promptWithRules = currentPrompt.includes(BOOKING_RULES_BLOCK_START)
+    ? currentPrompt
+    : withBookingRules(currentPrompt, extractBusinessAddress(currentPrompt));
+
   const updatedMessages = model.messages.map((m) =>
-    m.role === 'system' ? { ...m, content: appendTimezoneInstructions(currentPrompt, trimmedTimezone) } : m
+    m.role === 'system' ? { ...m, content: appendTimezoneInstructions(promptWithRules, trimmedTimezone) } : m
   );
 
   // Populate the tool-level `server.url` on every existing tool (the
@@ -462,8 +576,10 @@ export async function updateAssistantTimezone(
   const webhookUrl = resolveWebhookUrl(baseUrl);
   const updatedTools =
     webhookUrl && Array.isArray(model.tools)
-      ? model.tools.map((tool) => ({ ...tool, server: { url: webhookUrl } }))
-      : model.tools;
+      ? model.tools.map((tool) => upgradeBookAppointmentTool({ ...tool, server: { url: webhookUrl } }))
+      : Array.isArray(model.tools)
+        ? model.tools.map(upgradeBookAppointmentTool)
+        : model.tools;
 
   let response: Response;
   try {
@@ -612,5 +728,163 @@ export async function linkPhoneNumberToAssistant(
   }
 
   return data;
+}
+
+
+export interface UpdateAssistantSettingsParams {
+  assistantId: string;
+  /** Trade identifier (e.g. "plumber"). Drives the spoken industry label and the booking tool description. */
+  industry: string;
+  companyName?: string;
+  businessAddress?: string;
+  /** A custom prompt used verbatim. When omitted/blank, the prompt is regenerated from the other fields. */
+  systemPrompt?: string;
+  baseUrl?: string;
+}
+
+/** Generic industry used when a business is reset to a clean slate (no trade chosen). */
+const RESET_INDUSTRY = 'service';
+
+/**
+ * Server-only: syncs a deployed assistant's name, greeting, system prompt and
+ * booking tool to the owner's edited business settings via
+ * `PATCH https://api.vapi.ai/assistant/{id}`. The caller-timezone block
+ * appended by `updateAssistantTimezone` is preserved so editing a prompt never
+ * silently drops the timezone anchoring. Throws `VapiApiError` on any failure.
+ */
+export async function updateAssistantSettings({
+  assistantId,
+  industry,
+  companyName,
+  businessAddress,
+  systemPrompt,
+  baseUrl,
+}: UpdateAssistantSettingsParams): Promise<VapiAssistant> {
+  const apiKey = process.env.VAPI_PRIVATE_API_KEY;
+  if (!apiKey) {
+    throw new VapiApiError('Server misconfiguration: VAPI_PRIVATE_API_KEY is not set.');
+  }
+
+  const trimmedAssistantId = assistantId.trim();
+  if (!trimmedAssistantId) {
+    throw new VapiApiError('An `assistantId` is required to update the assistant.');
+  }
+
+  const trimmedIndustry = industry.trim();
+  if (!trimmedIndustry) {
+    throw new VapiApiError('An `industry` value (e.g. "plumber", "roofer") is required to update the assistant.');
+  }
+
+  const industryLabel = resolveIndustryLabel(trimmedIndustry);
+  const trimmedCompanyName = companyName?.trim();
+
+  const assistant = await fetchVapiAssistant(trimmedAssistantId, apiKey);
+  const model = assistant.model as
+    | { messages?: { role?: string; content?: string }[]; tools?: Record<string, unknown>[] }
+    | undefined;
+  const existingMessages = model?.messages ?? [];
+  const existingPrompt =
+    existingMessages.find((m) => m.role === 'system' && typeof m.content === 'string')?.content ?? '';
+
+  // Universal booking rules are re-enforced on every save, custom prompt or not.
+  let nextPrompt = withBookingRules(
+    systemPrompt?.trim() || buildSystemPrompt(industryLabel, trimmedCompanyName, businessAddress),
+    businessAddress
+  );
+
+  // Preserve the live timezone anchor unless the caller's prompt already carries one.
+  const timezoneIndex = existingPrompt.indexOf(TIMEZONE_BLOCK_START);
+  if (timezoneIndex !== -1 && !nextPrompt.includes(TIMEZONE_BLOCK_START)) {
+    nextPrompt = `${nextPrompt}${existingPrompt.slice(timezoneIndex)}`;
+  }
+
+  const hasSystemMessage = existingMessages.some((m) => m.role === 'system');
+  const nextMessages = hasSystemMessage
+    ? existingMessages.map((m) => (m.role === 'system' ? { ...m, content: nextPrompt } : m))
+    : [{ role: 'system', content: nextPrompt }, ...existingMessages];
+
+  // Refresh the booking tool's industry wording while keeping any other tools intact.
+  const freshBookingTool = buildBookAppointmentTool(industryLabel, baseUrl) as unknown as Record<string, unknown>;
+  const existingTools = Array.isArray(model?.tools) ? model.tools : [];
+  const isBookingTool = (tool: Record<string, unknown>) =>
+    (tool as { function?: { name?: string } }).function?.name === 'book_appointment';
+  const nextTools = existingTools.some(isBookingTool)
+    ? existingTools.map((tool) => (isBookingTool(tool) ? freshBookingTool : tool))
+    : [...existingTools, freshBookingTool];
+
+  const resolvedName = (
+    trimmedCompanyName ? `${trimmedCompanyName} — FluxFox Receptionist` : `FluxFox Receptionist — ${industryLabel}`
+  ).slice(0, 40);
+
+  const firstMessage = trimmedCompanyName
+    ? `Thanks for calling ${trimmedCompanyName}! I can help you schedule ${industryLabel} service. What can I help you with today?`
+    : `Thanks for calling! I can help you schedule ${industryLabel} service. What can I help you with today?`;
+
+  let response: Response;
+  try {
+    response = await fetch(`${VAPI_API_BASE_URL}/assistant/${trimmedAssistantId}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        name: resolvedName,
+        firstMessage,
+        model: { ...model, messages: nextMessages, tools: nextTools },
+        ...getVapiServerConfig(baseUrl),
+      }),
+    });
+  } catch (networkError) {
+    throw new VapiApiError(
+      `Failed to reach the Vapi API while updating assistant ${trimmedAssistantId}: ${
+        networkError instanceof Error ? networkError.message : 'unknown network error'
+      }.`
+    );
+  }
+
+  if (!response.ok) {
+    const errorBody = await response.text().catch(() => '');
+    throw new VapiApiError(
+      `Vapi API responded with ${response.status} while updating assistant ${trimmedAssistantId}${
+        errorBody ? `: ${errorBody}` : ` ${response.statusText}`
+      }`,
+      response.status
+    );
+  }
+
+  const data = (await response.json()) as VapiAssistant;
+  if (!data || typeof data.id !== 'string' || !data.id) {
+    throw new VapiApiError('Vapi API returned a response without a valid assistant id after the settings update.');
+  }
+
+  return data;
+}
+
+
+/**
+ * Server-only: resets a deployed assistant to a clean, generic receptionist
+ * (no business name, no address, default prompt, generic greeting) via
+ * `PATCH /assistant/{id}`. The assistant id and its linked phone number are
+ * kept, so calls keep being answered while the owner reconfigures.
+ */
+export async function resetAssistantToDefaults(assistantId: string, baseUrl?: string): Promise<VapiAssistant> {
+  return updateAssistantSettings({ assistantId, industry: RESET_INDUSTRY, baseUrl });
+}
+
+/**
+ * Server-only: reads the live system prompt currently on a deployed assistant
+ * (used to pre-fill the dashboard editor when no copy is stored locally).
+ * Returns an empty string if the assistant has no system message.
+ */
+export async function fetchAssistantSystemPrompt(assistantId: string): Promise<string> {
+  const apiKey = process.env.VAPI_PRIVATE_API_KEY;
+  if (!apiKey) {
+    throw new VapiApiError('Server misconfiguration: VAPI_PRIVATE_API_KEY is not set.');
+  }
+  const assistant = await fetchVapiAssistant(assistantId.trim(), apiKey);
+  const model = assistant.model as { messages?: { role?: string; content?: string }[] } | undefined;
+  const content = model?.messages?.find((m) => m.role === 'system')?.content;
+  return typeof content === 'string' ? content : '';
 }
 

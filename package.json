@@ -11,7 +11,8 @@
     "start:next": "next start --port=3002",
     "preview": "vite preview",
     "clean": "rm -rf dist server.js .next",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "seed:reviewer": "node --env-file-if-exists=.env.local --env-file-if-exists=.env scripts/seed-apple-reviewer.mjs"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

@@ -3,6 +3,7 @@ import { createClient } from '@/utils/supabase/server';
 import { provisionPhoneNumber, relinkOwnedPhoneNumber, TwilioApiError } from '@/lib/twilio';
 import { linkPhoneNumberToAssistant, updateAssistantTimezone, VapiApiError } from '@/lib/vapi';
 import { getTimezoneFromAreaCode } from '@/utils/timezone';
+import { requireActiveSubscription } from '@/lib/subscription';
 
 export const dynamic = 'force-dynamic';
 
@@ -63,6 +64,11 @@ export async function POST(request: Request): Promise<NextResponse<ProvisionSucc
   if (authError || !user) {
     return NextResponse.json({ error: 'No authenticated Supabase session was found.' }, { status: 401 });
   }
+
+  // PAYWALL: live phone number provisioning / forwarding / production
+  // routing requires an active subscription or 7-day free trial.
+  const paywall = await requireActiveSubscription(supabase, user.id);
+  if (paywall) return paywall;
 
   const { data: profile, error: profileError } = await supabase
     .from('users')
