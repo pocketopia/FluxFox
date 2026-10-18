@@ -65,8 +65,17 @@ export default function SubscriptionOffer() {
           our{' '}
           <a href="/terms" className="text-amber-400 underline">
             Terms of Use
-          </a>{' '}
-          and{' '}
+          </a>
+          ,{' '}
+          <a
+            href="https://www.apple.com/legal/internet-services/itunes/dev/stdeula/"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-amber-400 underline"
+          >
+            Apple Standard EULA
+          </a>
+          , and{' '}
           <a href="/privacy" className="text-amber-400 underline">
             Privacy Policy
           </a>
