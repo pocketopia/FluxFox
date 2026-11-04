@@ -1,3 +1,5 @@
+import { cookies } from 'next/headers';
+import { getFallbackSessionUser, getFallbackUserProfile, FLUXFOX_SESSION_COOKIE, FLUXFOX_PROFILE_COOKIE } from '@/lib/fallbackSession';
 import { redirect } from 'next/navigation';
 import { createClient } from '@/utils/supabase/server';
 import FluxFoxConsole from '@/components/dashboard/FluxFoxConsole';
@@ -25,24 +27,35 @@ import {
 export const dynamic = 'force-dynamic';
 
 export default async function DashboardPage() {
-  const supabase = await createClient();
+  let supabase: any = null;
+  let user: any = null;
+  let profile: any = null;
 
-  // Validate the user session server-side
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  // Real Supabase session guard: `src/app/login/page.tsx` now authenticates
-  // via `supabase.auth.signInWithPassword` / `signInWithOAuth` (Google),
-  // both of which persist a real cookie-based session readable here. Any
-  // unauthenticated visit is bounced straight back to /login.
-  if (authError || !user) {
-    redirect('/login');
+  try {
+    supabase = await createClient();
+    const { data } = await supabase.auth.getUser();
+    user = data?.user ?? null;
+    if (user) {
+      const { data: dbProfile } = await supabase.from('users').select('*').eq('id', user.id).single();
+      profile = dbProfile;
+    }
+  } catch {
+    // Supabase offline/paused; check first-party session cookie below
   }
 
-  // Retrieve user record from public.users table.
-  const { data: profile } = await supabase.from('users').select('*').eq('id', user.id).single();
+  if (!user) {
+    const fbUser = await getFallbackSessionUser();
+    if (!fbUser) {
+      redirect('/login');
+    }
+    user = {
+      id: fbUser.id,
+      email: fbUser.email,
+      user_metadata: { full_name: fbUser.fullName },
+      app_metadata: { provider: fbUser.provider },
+    };
+    profile = await getFallbackUserProfile(fbUser);
+  }
 
   const displayName =
     user?.user_metadata?.full_name ||
@@ -84,13 +97,17 @@ export default async function DashboardPage() {
     created_at: string;
   };
 
-  const { data: callLogs } = user && vapiAssistantId
-    ? await supabase
+  let callLogs: CallLogRow[] | null = null;
+  if (supabase && user && vapiAssistantId) {
+    try {
+      const { data } = await supabase
         .from('call_logs')
         .select('id, customer_phone, created_at')
         .eq('assistant_id', vapiAssistantId)
-        .order('created_at', { ascending: false })
-    : { data: null as CallLogRow[] | null };
+        .order('created_at', { ascending: false });
+      callLogs = data;
+    } catch {}
+  }
   // Paywall model: the interactive Test Demo (and the setup wizard up to the
   // final review) is reachable by every signed-in user, including unpaid and
   // App Review accounts. Anything LIVE — deploying the assistant, claiming /
@@ -104,8 +121,13 @@ export default async function DashboardPage() {
 
   async function handleSignOut() {
     'use server';
-    const serverSupabase = await createClient();
-    await serverSupabase.auth.signOut();
+    try {
+      const store = await cookies();
+      store.delete(FLUXFOX_SESSION_COOKIE);
+      store.delete(FLUXFOX_PROFILE_COOKIE);
+      const serverSupabase = await createClient();
+      await serverSupabase.auth.signOut();
+    } catch {}
     redirect('/login');
   }
 

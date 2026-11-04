@@ -46,7 +46,7 @@ workflows:
           NEXT=$((LATEST + 1))
           # Safe floor: PROJECT_BUILD_NUMBER + 10 always clears earlier manual
           # uploads (build 1, 2, ...). Take the higher of the two values.
-          FLOOR=$((PROJECT_BUILD_NUMBER + 10))
+          FLOOR=$((PROJECT_BUILD_NUMBER + 22))
           if [ "$FLOOR" -gt "$NEXT" ]; then NEXT=$FLOOR; fi
           echo "Using iOS buildNumber $NEXT (latest TestFlight: $LATEST, project build: $PROJECT_BUILD_NUMBER)"
           # Expo prebuild writes ios.buildNumber into CFBundleVersion /

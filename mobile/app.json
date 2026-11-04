@@ -19,7 +19,7 @@
       "newArchEnabled": false,
       "backgroundColor": "#09090b",
       "bundleIdentifier": "com.fluxfox.app",
-      "buildNumber": "1",
+      "buildNumber": "25",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSMicrophoneUsageDescription": "FluxFox needs access to your microphone so you can speak with your AI receptionist during setup and testing.",
@@ -50,4 +50,3 @@
     ]
   }
 }
-

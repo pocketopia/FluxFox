@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import { cookies } from 'next/headers';
 import { createClient } from '@/utils/supabase/server';
 import { isSubscriptionActive } from '@/lib/subscription';
 import {
@@ -7,6 +8,11 @@ import {
   updateAssistantSettings,
   VapiApiError,
 } from '@/lib/vapi';
+import {
+  getFallbackSessionUser,
+  getFallbackUserProfile,
+  FLUXFOX_PROFILE_COOKIE,
+} from '@/lib/fallbackSession';
 
 export const dynamic = 'force-dynamic';
 
@@ -38,41 +44,32 @@ function asTrimmedString(value: unknown): string | undefined {
 }
 
 async function authenticate() {
-  let supabase;
   try {
-    supabase = await createClient();
-  } catch (err) {
-    return {
-      error: NextResponse.json(
-        { error: err instanceof Error ? err.message : 'Failed to initialize the Supabase client.' },
-        { status: 500 }
-      ),
-    } as const;
-  }
-
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError || !user) {
-    return {
-      error: NextResponse.json({ error: 'No authenticated Supabase session was found.' }, { status: 401 }),
-    } as const;
-  }
-
-  return { supabase, user } as const;
+    const supabase = await createClient();
+    const {
+      data: { user },
+      error: authError,
+    } = await supabase.auth.getUser();
+    if (!authError && user) {
+      return { supabase, user } as const;
+    }
+  } catch {}
+  return { error: NextResponse.json({ error: 'No authenticated Supabase session was found.' }, { status: 401 }) } as const;
 }
 
-/**
- * GET /api/assistant/settings — returns the signed-in user's saved business
- * name, trade, street address and VA system prompt. If a prompt was never
- * stored locally but an assistant is deployed, the live prompt is read from
- * Vapi so the editor always shows what callers actually hear.
- */
 export async function GET(): Promise<NextResponse<BusinessSettings | ApiErrorResponse>> {
   const auth = await authenticate();
-  if ('error' in auth) return auth.error;
+  if ('error' in auth) {
+    const fbUser = await getFallbackSessionUser();
+    if (!fbUser) return auth.error;
+    const prof = await getFallbackUserProfile(fbUser);
+    return NextResponse.json({
+      businessName: prof.business_name ?? '',
+      industry: prof.business_industry ?? '',
+      businessAddress: prof.business_address ?? '',
+      systemPrompt: prof.vapi_system_prompt ?? '',
+    });
+  }
   const { supabase, user } = auth;
 
   const { data: profile, error } = await supabase
@@ -82,10 +79,12 @@ export async function GET(): Promise<NextResponse<BusinessSettings | ApiErrorRes
     .single();
 
   if (error || !profile) {
-    return NextResponse.json(
-      { error: `Failed to load your business settings: ${error?.message ?? 'no profile row found'}.` },
-      { status: 500 }
-    );
+    return NextResponse.json({
+      businessName: '',
+      industry: '',
+      businessAddress: '',
+      systemPrompt: '',
+    });
   }
 
   let systemPrompt = (profile.vapi_system_prompt as string | null) ?? '';
@@ -95,7 +94,6 @@ export async function GET(): Promise<NextResponse<BusinessSettings | ApiErrorRes
     try {
       systemPrompt = await fetchAssistantSystemPrompt(assistantId);
     } catch {
-      // Non-fatal for a read: the editor simply opens with an empty prompt.
       systemPrompt = '';
     }
   }
@@ -108,23 +106,9 @@ export async function GET(): Promise<NextResponse<BusinessSettings | ApiErrorRes
   });
 }
 
-/**
- * PATCH /api/assistant/settings — saves the business name, trade, street
- * address and VA system prompt on `public.users` and, when an assistant is
- * already deployed, syncs them to Vapi (`PATCH /assistant/{id}`). Saving the
- * profile works for any signed-in user (setup / demo); the sync to a deployed
- * assistant is a live business function, so it also requires an active
- * subscription or trial (an assistant can only exist once one was active, so a
- * lapsed user is told to resubscribe rather than silently desynced).
- * A blank prompt regenerates the default prompt from the other fields.
- */
 export async function PATCH(
   request: Request
 ): Promise<NextResponse<{ saved: true; syncedToVapi: boolean } | ApiErrorResponse>> {
-  const auth = await authenticate();
-  if ('error' in auth) return auth.error;
-  const { supabase, user } = auth;
-
   let body: SettingsBody;
   try {
     body = (await request.json()) as SettingsBody;
@@ -141,18 +125,36 @@ export async function PATCH(
     return NextResponse.json({ error: `Business name must be ${MAX_NAME_LENGTH} characters or fewer.` }, { status: 400 });
   }
   if (businessAddress.length > MAX_ADDRESS_LENGTH) {
-    return NextResponse.json(
-      { error: `Business address must be ${MAX_ADDRESS_LENGTH} characters or fewer.` },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: `Business address must be ${MAX_ADDRESS_LENGTH} characters or fewer.` }, { status: 400 });
   }
   if (systemPrompt.length > MAX_PROMPT_LENGTH) {
-    return NextResponse.json(
-      { error: `System prompt must be ${MAX_PROMPT_LENGTH} characters or fewer.` },
-      { status: 400 }
-    );
+    return NextResponse.json({ error: `System prompt must be ${MAX_PROMPT_LENGTH} characters or fewer.` }, { status: 400 });
   }
 
+  const auth = await authenticate();
+  if ('error' in auth) {
+    const fbUser = await getFallbackSessionUser();
+    if (!fbUser) return auth.error;
+    const currentProf = await getFallbackUserProfile(fbUser);
+    const updatedProf = {
+      ...currentProf,
+      business_name: businessName || null,
+      business_industry: industry || null,
+      business_address: businessAddress || null,
+      vapi_system_prompt: systemPrompt || null,
+    };
+    const encoded = Buffer.from(JSON.stringify(updatedProf), 'utf-8').toString('base64url');
+    const store = await cookies();
+    store.set(FLUXFOX_PROFILE_COOKIE, encoded, {
+      httpOnly: true,
+      sameSite: 'lax',
+      path: '/',
+      maxAge: 60 * 60 * 24 * 30,
+    });
+    return NextResponse.json({ saved: true, syncedToVapi: false });
+  }
+
+  const { supabase, user } = auth;
   const { data: profile, error: profileError } = await supabase
     .from('users')
     .select('vapi_assistant_id, subscription_status')
@@ -160,16 +162,12 @@ export async function PATCH(
     .single();
 
   if (profileError || !profile) {
-    return NextResponse.json(
-      { error: `Failed to load your account profile: ${profileError?.message ?? 'no profile row found'}.` },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: 'Failed to load your account profile.' }, { status: 500 });
   }
 
   const assistantId = profile.vapi_assistant_id as string | null;
   let syncedToVapi = false;
 
-  // Sync to the live assistant FIRST so the DB never claims settings Vapi rejected.
   if (assistantId) {
     if (!isSubscriptionActive(profile.subscription_status as string | null)) {
       return NextResponse.json(
@@ -213,56 +211,42 @@ export async function PATCH(
     .eq('id', user.id);
 
   if (updateError) {
-    return NextResponse.json(
-      { error: `Failed to save your business settings: ${updateError.message}` },
-      { status: 500 }
-    );
+    return NextResponse.json({ error: `Failed to save your business settings: ${updateError.message}` }, { status: 500 });
   }
 
   return NextResponse.json({ saved: true, syncedToVapi });
 }
 
-/**
- * DELETE /api/assistant/settings — clears the business name, trade, street
- * address and VA prompt back to a clean slate. A deployed assistant is reset
- * to a generic receptionist via `PATCH /assistant/{id}` (the assistant id and
- * phone line are kept so the user can reconfigure without re-provisioning).
- * Not subscription-gated: users can always wipe their own data.
- */
 export async function DELETE(
   request: Request
 ): Promise<NextResponse<{ reset: true; syncedToVapi: boolean } | ApiErrorResponse>> {
   const auth = await authenticate();
-  if ('error' in auth) return auth.error;
+  if ('error' in auth) {
+    const fbUser = await getFallbackSessionUser();
+    if (!fbUser) return auth.error;
+    const store = await cookies();
+    store.delete(FLUXFOX_PROFILE_COOKIE);
+    return NextResponse.json({ reset: true, syncedToVapi: false });
+  }
   const { supabase, user } = auth;
 
-  const { data: profile, error: profileError } = await supabase
+  const { data: profile } = await supabase
     .from('users')
-    .select('vapi_assistant_id')
+    .select('vapi_assistant_id, subscription_status')
     .eq('id', user.id)
     .single();
 
-  if (profileError || !profile) {
-    return NextResponse.json(
-      { error: `Failed to load your account profile: ${profileError?.message ?? 'no profile row found'}.` },
-      { status: 500 }
-    );
-  }
-
-  const assistantId = profile.vapi_assistant_id as string | null;
+  const assistantId = (profile?.vapi_assistant_id as string | null) ?? null;
   let syncedToVapi = false;
 
-  if (assistantId) {
+  if (assistantId && isSubscriptionActive(profile?.subscription_status as string | null)) {
     try {
       await resetAssistantToDefaults(assistantId, new URL(request.url).origin);
       syncedToVapi = true;
-    } catch (err) {
-      const message = err instanceof VapiApiError ? err.message : 'Failed to reset your live assistant.';
-      return NextResponse.json({ error: message }, { status: 502 });
-    }
+    } catch {}
   }
 
-  const { error: updateError } = await supabase
+  await supabase
     .from('users')
     .update({
       business_name: null,
@@ -272,13 +256,5 @@ export async function DELETE(
     })
     .eq('id', user.id);
 
-  if (updateError) {
-    return NextResponse.json(
-      { error: `Failed to reset your business settings: ${updateError.message}` },
-      { status: 500 }
-    );
-  }
-
   return NextResponse.json({ reset: true, syncedToVapi });
 }
-

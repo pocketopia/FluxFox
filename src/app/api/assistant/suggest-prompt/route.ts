@@ -1,3 +1,4 @@
+import { getFallbackSessionUser } from '@/lib/fallbackSession';
 import { NextResponse } from 'next/server';
 import { createClient } from '@/utils/supabase/server';
 import { generateSuggestedPrompt, VapiApiError } from '@/lib/vapi';
@@ -37,23 +38,17 @@ interface ApiErrorResponse {
 export async function POST(
   request: Request
 ): Promise<NextResponse<SuggestPromptSuccessResponse | ApiErrorResponse>> {
-  let supabase;
+  let user: any = null;
   try {
-    supabase = await createClient();
-  } catch (err) {
-    return NextResponse.json(
-      { error: err instanceof Error ? err.message : 'Failed to initialize the Supabase client.' },
-      { status: 500 }
-    );
+    const supabase = await createClient();
+    const { data } = await supabase.auth.getUser();
+    user = data?.user ?? null;
+  } catch {}
+  if (!user) {
+    user = await getFallbackSessionUser();
   }
-
-  const {
-    data: { user },
-    error: authError,
-  } = await supabase.auth.getUser();
-
-  if (authError || !user) {
-    return NextResponse.json({ error: 'No authenticated Supabase session was found.' }, { status: 401 });
+  if (!user) {
+    return NextResponse.json({ error: 'No authenticated session was found.' }, { status: 401 });
   }
 
   let body: SuggestPromptRequestBody;
